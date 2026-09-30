@@ -121,7 +121,7 @@ func fetchChatGPT(client *http.Client) ProviderResult {
 		} else if w.ResetAfterSeconds != nil {
 			reset = time.Now().UTC().Add(time.Duration(*w.ResetAfterSeconds) * time.Second).Format(time.RFC3339)
 		}
-		r.Metrics = append(r.Metrics, Metric{Label: label, Value: fmt.Sprintf("%.1f%% użyte", p), Percent: &p, ResetAt: reset})
+		r.Metrics = append(r.Metrics, Metric{Label: label, Value: usedPercentLabel(p), Percent: &p, ResetAt: reset})
 	}
 	addWindow(payload.RateLimit.PrimaryWindow, "5 h")
 	addWindow(payload.RateLimit.SecondaryWindow, "Tydzień")

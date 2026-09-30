@@ -102,7 +102,7 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 			return
 		}
 		p := round1(clamp(*w.Utilization, 0, 100))
-		r.Metrics = append(r.Metrics, Metric{Label: label, Value: fmt.Sprintf("%.1f%% użyte", p), Percent: &p, ResetAt: w.ResetsAt})
+		r.Metrics = append(r.Metrics, Metric{Label: label, Value: usedPercentLabel(p), Percent: &p, ResetAt: w.ResetsAt})
 	}
 	add(payload.FiveHour, "5 h")
 	add(payload.SevenDay, "Tydzień")

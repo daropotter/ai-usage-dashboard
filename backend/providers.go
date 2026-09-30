@@ -87,7 +87,7 @@ func fetchOpenCodeQuota(client *http.Client, id, name, envKey, envURL string) Pr
 	for _, item := range labels {
 		if w, ok := payload.Usage[item.key]; ok {
 			p := round1(clamp(w.Percent, 0, 100))
-			r.Metrics = append(r.Metrics, Metric{Label: item.label, Value: fmt.Sprintf("%.1f%% użyte", p), Percent: &p, ResetAt: w.ResetsAt})
+			r.Metrics = append(r.Metrics, Metric{Label: item.label, Value: usedPercentLabel(p), Percent: &p, ResetAt: w.ResetsAt})
 		}
 	}
 	if len(r.Metrics) == 0 {
@@ -143,7 +143,7 @@ func fetchOllama(client *http.Client) ProviderResult {
 				if reset == "" && c.label == "Miesiąc" {
 					reset = ollamaMonthlyReset(time.Now().UTC())
 				}
-				r.Metrics = append(r.Metrics, Metric{Label: c.label, Value: fmt.Sprintf("%.1f%% użyte", p), Percent: &p, ResetAt: reset})
+				r.Metrics = append(r.Metrics, Metric{Label: c.label, Value: usedPercentLabel(p), Percent: &p, ResetAt: reset})
 			}
 		}
 	}
@@ -249,6 +249,12 @@ func fetchOpenAI(client *http.Client) ProviderResult {
 // round1 zaokrągla do jednego miejsca po przecinku (czytelne wartości procentowe).
 func round1(v float64) float64 {
 	return math.Round(v*10) / 10
+}
+
+// usedPercentLabel formatuje procent zaokrąglony do 0.1 bez zbędnego ".0"
+// (11 -> "11% użyte", 93.2 -> "93.2% użyte").
+func usedPercentLabel(p float64) string {
+	return strconv.FormatFloat(round1(p), 'f', -1, 64) + "% użyte"
 }
 
 // ollamaMonthlyReset zwraca najbliższą datę resetu limitu miesięcznego Ollamy.
