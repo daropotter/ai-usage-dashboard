@@ -36,6 +36,8 @@ Dashboard pokazuje zawsze 6 kafelków (w tej kolejności):
 - Każdy kafelek istnieje zawsze. Brak klucza, brak kompatybilnego API albo brak
   metryk daje stan `Brak danych` / `Błąd pobierania`, bez ukrywania kafelka.
 - Odpowiedzi `/api/dashboard` mają `Cache-Control: no-store`.
+- Frontend odświeża dane **tylko ręcznie** (przycisk „Odśwież") — brak
+  automatycznego odpytywania w tle.
 - Auto-odświeżanie tokenów ChatGPT/Claude zapisuje zrotowane tokeny z powrotem do
   zamontowanego pliku (poza gitem). Uwaga: ten sam `refresh_token` używany
   równolegle lokalnie i na serwerze wzajemnie się unieważnia.

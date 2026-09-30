@@ -70,7 +70,7 @@ export default function App(){
     catch(e){ setError(e instanceof Error?e.message:'Nieznany błąd') }
     finally { setLoading(false) }
   },[])
-  useEffect(()=>{void load(); const id=setInterval(()=>void load(),60_000); return()=>clearInterval(id)},[load])
+  useEffect(()=>{void load()},[load])
   const providers=useMemo(()=>expected.map(f=>data?.providers.find(p=>p.id===f.id)??f),[data])
   return <main className="page">
     <section className="hero">
@@ -79,6 +79,6 @@ export default function App(){
     </section>
     {error && <div className="globalError">Nie udało się odświeżyć dashboardu: {error}. Kafelki pozostają widoczne.</div>}
     <section className="grid">{providers.map(p=><ProviderCard p={p} key={p.id}/>)}</section>
-    <div className="meta">{data?.updatedAt ? `Ostatnie odświeżenie: ${new Date(data.updatedAt).toLocaleString('pl-PL')}` : 'Oczekiwanie na dane…'} · automatyczne odświeżanie co 60 s</div>
+    <div className="meta">{data?.updatedAt ? `Ostatnie odświeżenie: ${new Date(data.updatedAt).toLocaleString('pl-PL')}` : 'Oczekiwanie na dane…'} · odświeżanie ręczne</div>
   </main>
 }
