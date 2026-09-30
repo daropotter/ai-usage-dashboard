@@ -10,11 +10,17 @@ import (
 	"time"
 )
 
+type MetricRow struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
 type Metric struct {
-	Label   string   `json:"label"`
-	Value   string   `json:"value"`
-	Percent *float64 `json:"percent,omitempty"`
-	ResetAt string   `json:"resetAt,omitempty"`
+	Label   string      `json:"label"`
+	Value   string      `json:"value"`
+	Percent *float64    `json:"percent,omitempty"`
+	ResetAt string      `json:"resetAt,omitempty"`
+	Rows    []MetricRow `json:"rows,omitempty"`
 }
 
 type ProviderResult struct {
@@ -52,17 +58,19 @@ func main() {
 			idx    int
 			result ProviderResult
 		}
-		ch := make(chan indexed, 4)
 		providers := []func() ProviderResult{
 			func() ProviderResult { return fetchOpenAI(client) },
+			func() ProviderResult { return fetchChatGPT(client) },
 			func() ProviderResult { return fetchAnthropic(client) },
-			func() ProviderResult { return fetchOpenCodeGo(client) },
 			func() ProviderResult { return fetchOllama(client) },
+			func() ProviderResult { return fetchOpenCodeGo(client) },
+			func() ProviderResult { return fetchOpenCodeGoB(client) },
 		}
+		ch := make(chan indexed, len(providers))
 		for i, fn := range providers {
 			go func(i int, fn func() ProviderResult) { ch <- indexed{i, fn()} }(i, fn)
 		}
-		results := make([]ProviderResult, 4)
+		results := make([]ProviderResult, len(providers))
 		for range providers {
 			v := <-ch
 			results[v.idx] = v.result

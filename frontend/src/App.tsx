@@ -1,22 +1,44 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Activity, AlertTriangle, CheckCircle2, Cloud, RefreshCw, ShieldCheck } from 'lucide-react'
 
-type Metric = { label:string; value:string; percent?:number; resetAt?:string }
+type Metric = { label:string; value:string; percent?:number; resetAt?:string; rows?:{label:string;value:string}[] }
 type Provider = { id:string; name:string; status:'ok'|'no_data'|'error'; configured:boolean; summary:string; message?:string; source:string; metrics:Metric[]; updatedAt:string }
 type Dashboard = { providers:Provider[]; updatedAt:string }
 
 const expected: Provider[] = [
   {id:'openai',name:'OpenAI',status:'no_data',configured:false,summary:'Brak danych',source:'OpenAI',metrics:[],updatedAt:''},
+  {id:'chatgpt',name:'ChatGPT (subskrypcja)',status:'no_data',configured:false,summary:'Brak danych',source:'ChatGPT',metrics:[],updatedAt:''},
   {id:'anthropic',name:'Claude / Anthropic',status:'no_data',configured:false,summary:'Brak danych',source:'Anthropic',metrics:[],updatedAt:''},
-  {id:'opencode-go',name:'OpenCode Go',status:'no_data',configured:false,summary:'Brak danych',source:'OpenCode',metrics:[],updatedAt:''},
   {id:'ollama-cloud',name:'Ollama Cloud',status:'no_data',configured:false,summary:'Brak danych',source:'Ollama',metrics:[],updatedAt:''},
+  {id:'opencode-go',name:'OpenCode Go A',status:'no_data',configured:false,summary:'Brak danych',source:'OpenCode',metrics:[],updatedAt:''},
+  {id:'opencode-go-b',name:'OpenCode Go B',status:'no_data',configured:false,summary:'Brak danych',source:'OpenCode',metrics:[],updatedAt:''},
 ]
 
 function formatReset(value?:string) {
   if (!value) return ''
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value
-  return new Intl.DateTimeFormat('pl-PL',{dateStyle:'short',timeStyle:'short'}).format(d)
+  const abs = new Intl.DateTimeFormat('pl-PL',{dateStyle:'short',timeStyle:'short'}).format(d)
+  const rel = formatRelative(value)
+  return rel ? `${abs} (${rel})` : abs
+}
+
+function formatRelative(value:string) {
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  const diffMs = d.getTime() - Date.now()
+  const future = diffMs >= 0
+  const totalMin = Math.floor(Math.abs(diffMs) / 60000)
+  if (totalMin < 1) return future ? 'za chwilę' : 'przed chwilą'
+  const days = Math.floor(totalMin / 1440)
+  const hours = Math.floor((totalMin % 1440) / 60)
+  const mins = totalMin % 60
+  const parts:string[] = []
+  if (days > 0) parts.push(`${days} ${days === 1 ? 'dzień' : 'dni'}`)
+  if (hours > 0) parts.push(`${hours} godz.`)
+  if (mins > 0) parts.push(`${mins} min`)
+  const body = parts.join(' ')
+  return future ? `za ${body}` : `${body} temu`
 }
 
 function ProviderCard({p}:{p:Provider}) {
@@ -31,6 +53,7 @@ function ProviderCard({p}:{p:Provider}) {
       <div className="metricLine"><span>{m.label}</span><strong>{m.value}</strong></div>
       {typeof m.percent === 'number' && <div className="track" aria-label={`${m.label}: ${m.percent}%`}><div className="fill" style={{width:`${Math.min(100,Math.max(0,m.percent))}%`}}/></div>}
       {m.resetAt && <div className="reset">Reset: {formatReset(m.resetAt)}</div>}
+      {m.rows && m.rows.length > 0 && <ul className="rows">{m.rows.map((row,j)=><li key={`${row.label}-${j}`}><span>{row.label}</span><strong>{row.value}</strong></li>)}</ul>}
     </div>)}</div> : <div className="empty"><Activity size={20}/><span>Brak metryk do wyświetlenia.</span></div>}
     {p.message && <p className="message">{p.message}</p>}
     <footer><span>{p.configured ? 'Backend skonfigurowany' : 'Brak konfiguracji ENV'}</span><span>Klucze nigdy nie trafiają do frontendu</span></footer>

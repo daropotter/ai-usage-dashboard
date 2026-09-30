@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,10 +55,18 @@ func compactError(b []byte) string {
 }
 
 func fetchOpenCodeGo(client *http.Client) ProviderResult {
-	key := strings.TrimSpace(os.Getenv("OPENCODE_GO_API_KEY"))
-	r := baseResult("opencode-go", "OpenCode Go", "OpenCode Go quota API", key != "")
+	return fetchOpenCodeQuota(client, "opencode-go", "OpenCode Go A", "OPENCODE_GO_API_KEY", "OPENCODE_GO_USAGE_URL")
+}
+
+func fetchOpenCodeGoB(client *http.Client) ProviderResult {
+	return fetchOpenCodeQuota(client, "opencode-go-b", "OpenCode Go B", "OPENCODE_GO_B_API_KEY", "OPENCODE_GO_B_USAGE_URL")
+}
+
+func fetchOpenCodeQuota(client *http.Client, id, name, envKey, envURL string) ProviderResult {
+	key := strings.TrimSpace(os.Getenv(envKey))
+	r := baseResult(id, name, "OpenCode Go quota API", key != "")
 	if key == "" {
-		r.Message = "Ustaw OPENCODE_GO_API_KEY."
+		r.Message = "Ustaw " + envKey + "."
 		return r
 	}
 
@@ -67,7 +77,7 @@ func fetchOpenCodeGo(client *http.Client) ProviderResult {
 			ResetsAt string  `json:"resetsAt"`
 		} `json:"usage"`
 	}
-	endpoint := envOr("OPENCODE_GO_USAGE_URL", "https://opencode.ai/zen/go/v1/usage")
+	endpoint := envOr(envURL, "https://opencode.ai/zen/go/v1/usage")
 	if err := doJSON(client, http.MethodGet, endpoint, map[string]string{"Authorization": "Bearer " + key}, &payload); err != nil {
 		r.Status = "error"
 		r.Message = safeProviderError(err)
@@ -76,7 +86,7 @@ func fetchOpenCodeGo(client *http.Client) ProviderResult {
 	labels := []struct{ key, label string }{{"rolling", "5 h"}, {"weekly", "Tydzień"}, {"monthly", "Miesiąc"}}
 	for _, item := range labels {
 		if w, ok := payload.Usage[item.key]; ok {
-			p := clamp(w.Percent, 0, 100)
+			p := round1(clamp(w.Percent, 0, 100))
 			r.Metrics = append(r.Metrics, Metric{Label: item.label, Value: fmt.Sprintf("%.1f%% użyte", p), Percent: &p, ResetAt: w.ResetsAt})
 		}
 	}
@@ -115,11 +125,63 @@ func fetchOllama(client *http.Client) ProviderResult {
 	}
 	for _, c := range candidates {
 		if m, ok := findObject(raw, c.keys); ok {
-			if p, ok := findPercent(m); ok {
-				p = clamp(p, 0, 100)
+			p, found := findPercent(m)
+			if !found {
+				// Ollama Cloud /api/usage zwraca limits.<okno>.usage jako ułamek
+				// 0..1 (np. 0.932 = 93,2% wykorzystania). Wartości >1 traktujemy
+				// jako już wyrażone w procentach.
+				if u, ok := findNumber(m, []string{"usage", "used"}); ok {
+					if u <= 1 {
+						u *= 100
+					}
+					p, found = u, true
+				}
+			}
+			if found {
+				p = round1(clamp(p, 0, 100))
 				reset := findString(m, []string{"resetsAt", "resets_at", "reset_at", "reset", "resets_in"})
+				if reset == "" && c.label == "Miesiąc" {
+					reset = ollamaMonthlyReset(time.Now().UTC())
+				}
 				r.Metrics = append(r.Metrics, Metric{Label: c.label, Value: fmt.Sprintf("%.1f%% użyte", p), Percent: &p, ResetAt: reset})
 			}
+		}
+	}
+	// Dodatkowe dane z formatu Ollama Cloud: rozbicie żądań na modele i koszt overage.
+	if m, ok := findObject(raw, []string{"monthly", "month", "monthly_usage"}); ok {
+		if arr, ok := m["models"].([]any); ok {
+			type modelUse struct {
+				name string
+				n    int
+			}
+			var list []modelUse
+			total := 0
+			for _, it := range arr {
+				if o, ok := it.(map[string]any); ok {
+					if n, ok := findNumber(o, []string{"request_count", "requests", "count"}); ok {
+						name := findString(o, []string{"name", "model"})
+						if name == "" {
+							name = "model"
+						}
+						count := int(n)
+						total += count
+						list = append(list, modelUse{name, count})
+					}
+				}
+			}
+			if total > 0 {
+				sort.Slice(list, func(i, j int) bool { return list[i].n > list[j].n })
+				rows := make([]MetricRow, 0, len(list))
+				for _, x := range list {
+					rows = append(rows, MetricRow{Label: x.name, Value: fmt.Sprintf("%d", x.n)})
+				}
+				r.Metrics = append(r.Metrics, Metric{Label: "Żądania wg modelu (miesiąc)", Value: fmt.Sprintf("%d", total), Rows: rows})
+			}
+		}
+	}
+	if act, ok := raw["activity"].(map[string]any); ok {
+		if cost, ok := findNumber(act, []string{"cost"}); ok && cost > 0 {
+			r.Metrics = append(r.Metrics, Metric{Label: "Koszt (4 tyg.)", Value: fmt.Sprintf("%.2f USD", cost)})
 		}
 	}
 	if len(r.Metrics) == 0 {
@@ -184,57 +246,57 @@ func fetchOpenAI(client *http.Client) ProviderResult {
 	return r
 }
 
-func fetchAnthropic(client *http.Client) ProviderResult {
-	key := strings.TrimSpace(os.Getenv("ANTHROPIC_ADMIN_API_KEY"))
-	r := baseResult("anthropic", "Claude / Anthropic", "Anthropic Usage & Cost Admin API", key != "")
-	if key == "" {
-		r.Message = "Ustaw ANTHROPIC_ADMIN_API_KEY. Zwykły Claude Pro/Max nie udostępnia tego raportu przez indywidualny klucz API."
-		return r
-	}
+// round1 zaokrągla do jednego miejsca po przecinku (czytelne wartości procentowe).
+func round1(v float64) float64 {
+	return math.Round(v*10) / 10
+}
 
-	now := time.Now().UTC()
-	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	q := url.Values{}
-	q.Set("starting_at", start.Format(time.RFC3339))
-	q.Set("ending_at", now.Add(time.Minute).Format(time.RFC3339))
-	q.Set("bucket_width", "1d")
-	q.Set("limit", "31")
-	endpoint := envOr("ANTHROPIC_COSTS_URL", "https://api.anthropic.com/v1/organizations/cost_report") + "?" + q.Encode()
-	var payload struct {
-		Data []struct {
-			Results []struct {
-				Amount   string `json:"amount"`
-				Currency string `json:"currency"`
-			} `json:"results"`
-		} `json:"data"`
-	}
-	headers := map[string]string{"x-api-key": key, "anthropic-version": "2023-06-01"}
-	if err := doJSON(client, http.MethodGet, endpoint, headers, &payload); err != nil {
-		r.Status = "error"
-		r.Message = safeProviderError(err) + " Admin API jest niedostępne dla indywidualnych kont."
-		return r
-	}
-	cents := 0.0
-	currency := "USD"
-	for _, b := range payload.Data {
-		for _, x := range b.Results {
-			if n, err := strconv.ParseFloat(x.Amount, 64); err == nil {
-				cents += n
-			}
-			if x.Currency != "" {
-				currency = strings.ToUpper(x.Currency)
-			}
+// ollamaMonthlyReset zwraca najbliższą datę resetu limitu miesięcznego Ollamy.
+// Endpoint /api/usage jej nie podaje, więc liczymy z kotwicy OLLAMA_RESET_ANCHOR
+// (dowolna znana data resetu; rzutowana w przyszłość co miesiąc). Bez kotwicy
+// używamy przybliżenia: 1. dzień następnego miesiąca 00:00 UTC.
+func ollamaMonthlyReset(now time.Time) string {
+	if s := strings.TrimSpace(os.Getenv("OLLAMA_RESET_ANCHOR")); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return nextMonthlyReset(t.UTC(), now).Format(time.RFC3339)
 		}
 	}
-	total := cents / 100.0
-	r.Metrics = append(r.Metrics, Metric{Label: "Koszt w tym miesiącu", Value: fmt.Sprintf("%.2f %s", total, currency)})
-	if limit, ok := envFloat("ANTHROPIC_MONTHLY_LIMIT_USD"); ok && limit > 0 {
-		p := clamp(total/limit*100, 0, 100)
-		r.Metrics = append(r.Metrics, Metric{Label: "Własny limit miesięczny", Value: fmt.Sprintf("%.2f / %.2f USD", total, limit), Percent: &p})
+	return firstDayNextMonthUTC()
+}
+
+// nextMonthlyReset przesuwa kotwicę o pełne miesiące, aż wypadnie po `now`,
+// zachowując dzień i godzinę (dzień przycinany do długości miesiąca).
+func nextMonthlyReset(anchor, now time.Time) time.Time {
+	if anchor.After(now) {
+		return anchor
 	}
-	r.Status = "ok"
-	r.Summary = "Billing API (nie Claude Pro/Max quota)"
-	return r
+	y, mo, d := anchor.Date()
+	h, mi, sec := anchor.Clock()
+	for i := 1; i < 1200; i++ {
+		total := int(mo) - 1 + i
+		yy := y + total/12
+		mm := time.Month(total%12 + 1)
+		dd := d
+		if last := daysInMonth(yy, mm); dd > last {
+			dd = last
+		}
+		cand := time.Date(yy, mm, dd, h, mi, sec, 0, time.UTC)
+		if cand.After(now) {
+			return cand
+		}
+	}
+	return anchor
+}
+
+func daysInMonth(y int, m time.Month) int {
+	return time.Date(y, m+1, 0, 0, 0, 0, 0, time.UTC).Day()
+}
+
+// firstDayNextMonthUTC zwraca początek następnego miesiąca o 00:00 UTC w RFC3339.
+func firstDayNextMonthUTC() string {
+	now := time.Now().UTC()
+	next := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	return next.Format(time.RFC3339)
 }
 
 func envFloat(key string) (float64, bool) {
@@ -279,6 +341,9 @@ func findObject(root map[string]any, keys []string) (map[string]any, bool) {
 }
 func findPercent(m map[string]any) (float64, bool) {
 	keys := []string{"percent", "percentage", "used_percent", "usage_percent", "usedPercentage", "used_percentage"}
+	return findNumber(m, keys)
+}
+func findNumber(m map[string]any, keys []string) (float64, bool) {
 	for _, k := range keys {
 		if v, ok := m[k]; ok {
 			switch n := v.(type) {
