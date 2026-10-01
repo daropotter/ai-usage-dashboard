@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +26,22 @@ const (
 	claudeBetaHeader = "oauth-2025-04-20"
 )
 
+// Odświeżanie tokenu chronimy blokadą (single-flight) i cooldownem, żeby
+// równoległe żądania oraz zbyt częste próby nie pogłębiały limitu 429 z token
+// endpointu Anthropic.
+const (
+	claudeRefreshSkew       = 5 * time.Minute
+	claudeRefreshCooldown   = 5 * time.Minute
+	claudeRateLimitCooldown = 15 * time.Minute
+	claudeInvalidCooldown   = time.Hour
+)
+
+var (
+	claudeMu      sync.Mutex
+	claudeNextTry time.Time
+	claudeLastErr error
+)
+
 type claudeCreds struct {
 	ClaudeAiOauth struct {
 		AccessToken      string  `json:"accessToken"`
@@ -35,6 +54,31 @@ type claudeCreds struct {
 type claudeWindow struct {
 	Utilization *float64 `json:"utilization"`
 	ResetsAt    string   `json:"resets_at"`
+}
+
+// claudeHTTPError niesie status i ewentualne Retry-After z token endpointu.
+type claudeHTTPError struct {
+	Status     int
+	RetryAfter time.Duration
+	Body       string
+}
+
+func (e *claudeHTTPError) Error() string {
+	msg := fmt.Sprintf("HTTP %d", e.Status)
+	if e.Body != "" {
+		msg += ": " + e.Body
+	}
+	if e.RetryAfter > 0 {
+		msg += fmt.Sprintf(" (retry po %s)", e.RetryAfter.Round(time.Second))
+	}
+	return msg
+}
+
+// claudeCooldownError oznacza, że sami wstrzymaliśmy kolejne próby odświeżenia.
+type claudeCooldownError struct{ Until time.Time }
+
+func (e *claudeCooldownError) Error() string {
+	return "odświeżanie wstrzymane do " + e.Until.UTC().Format("15:04:05Z") + " (limit po stronie Anthropic)"
 }
 
 func fetchAnthropic(client *http.Client) ProviderResult {
@@ -56,19 +100,30 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 	r.Configured = true
 
 	usageURL := envOr("CLAUDE_USAGE_URL", defaultClaudeUsageURL)
+
+	// Proaktywne odświeżenie: nie czekamy na 401, gdy token jest blisko wygaśnięcia.
+	if claudeNeedsRefresh(creds) {
+		if err := claudeTryRefresh(client, path, &creds); err != nil {
+			r.Status = "error"
+			r.Message = "Token wymaga odświeżenia, ale się nie udało: " + safeProviderError(err)
+			return r
+		}
+	}
+
 	body, status, err := claudeGet(client, usageURL, creds.ClaudeAiOauth.AccessToken)
 	if err != nil {
 		r.Status = "error"
 		r.Message = safeProviderError(err)
 		return r
 	}
+	// 401 mimo z pozoru ważnego tokenu (np. unieważniony przez inną sesję Claude Code).
 	if status == http.StatusUnauthorized {
 		if creds.ClaudeAiOauth.RefreshToken == "" {
 			r.Status = "error"
-			r.Message = "Token wygasł, a plik nie zawiera claudeAiOauth.refreshToken. Zaktualizuj CLAUDE_AUTH_FILE."
+			r.Message = "Token wygasł lub został unieważniony, a plik nie zawiera claudeAiOauth.refreshToken. Zaktualizuj CLAUDE_AUTH_FILE."
 			return r
 		}
-		if err := refreshClaude(client, path, &creds); err != nil {
+		if err := claudeTryRefresh(client, path, &creds); err != nil {
 			r.Status = "error"
 			r.Message = "Token wygasł, odświeżenie nie powiodło się: " + safeProviderError(err)
 			return r
@@ -79,6 +134,11 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 			r.Message = safeProviderError(err)
 			return r
 		}
+	}
+	if status == http.StatusTooManyRequests {
+		r.Status = "error"
+		r.Message = "Anthropic ogranicza częstotliwość tego endpointu (HTTP 429). Spróbuj ponownie później."
+		return r
 	}
 	if status < 200 || status >= 300 {
 		r.Status = "error"
@@ -118,6 +178,53 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 	r.Status = "ok"
 	r.Summary = "Limity subskrypcji"
 	return r
+}
+
+// claudeNeedsRefresh mówi, czy token wygasa w ciągu claudeRefreshSkew.
+func claudeNeedsRefresh(creds claudeCreds) bool {
+	if creds.ClaudeAiOauth.AccessToken == "" || creds.ClaudeAiOauth.ExpiresAt <= 0 {
+		return false
+	}
+	return time.Now().Add(claudeRefreshSkew).UnixMilli() >= int64(creds.ClaudeAiOauth.ExpiresAt)
+}
+
+// claudeTryRefresh odświeża token z blokadą i cooldownem. Blokada sprawia, że
+// równoległe żądania wykonają tylko jedną wymianę tokenu.
+func claudeTryRefresh(client *http.Client, path string, creds *claudeCreds) error {
+	claudeMu.Lock()
+	defer claudeMu.Unlock()
+
+	if time.Now().Before(claudeNextTry) {
+		return &claudeCooldownError{Until: claudeNextTry}
+	}
+	// Inne żądanie mogło już odświeżyć plik — użyj świeższych danych.
+	if fresh, err := readClaudeCreds(path); err == nil && fresh.ClaudeAiOauth.AccessToken != creds.ClaudeAiOauth.AccessToken {
+		*creds = fresh
+		return nil
+	}
+
+	if err := refreshClaude(client, path, creds); err != nil {
+		cooldown := claudeRefreshCooldown
+		var he *claudeHTTPError
+		if errors.As(err, &he) {
+			switch {
+			case he.Status == http.StatusTooManyRequests:
+				cooldown = claudeRateLimitCooldown
+				if he.RetryAfter > cooldown {
+					cooldown = he.RetryAfter
+				}
+			case he.Status == http.StatusBadRequest || he.Status == http.StatusUnauthorized:
+				// refresh_token nieważny — nie ma sensu dobijać endpointu.
+				cooldown = claudeInvalidCooldown
+			}
+		}
+		claudeNextTry = time.Now().Add(cooldown)
+		claudeLastErr = err
+		return err
+	}
+	claudeNextTry = time.Time{}
+	claudeLastErr = nil
+	return nil
 }
 
 // claudeGet nie przerywa na non-2xx, żeby odróżnić wygasły token (401) od reszty.
@@ -184,7 +291,11 @@ func refreshClaude(client *http.Client, path string, creds *claudeCreds) error {
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, compactError(body))
+		return &claudeHTTPError{
+			Status:     resp.StatusCode,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+			Body:       compactError(body),
+		}
 	}
 	var out struct {
 		AccessToken  string  `json:"access_token"`
@@ -205,6 +316,26 @@ func refreshClaude(client *http.Client, path string, creds *claudeCreds) error {
 		creds.ClaudeAiOauth.ExpiresAt = float64(time.Now().Add(time.Duration(out.ExpiresIn) * time.Second).UnixMilli())
 	}
 	return persistClaudeCreds(path, creds)
+}
+
+// parseRetryAfter rozumie zarówno liczbę sekund, jak i datę HTTP.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+		return 0
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // persistClaudeCreds aktualizuje claudeAiOauth w pliku, zachowując inne pola.
