@@ -97,7 +97,26 @@ func main() {
 
 	addr := ":" + envOr("PORT", "8080")
 	log.Printf("AI usage dashboard listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, securityHeaders(mux)))
+	log.Fatal(http.ListenAndServe(addr, securityHeaders(logRequests(mux))))
+}
+
+// logRequests pomaga ustalić, kto i jak często odpytuje /api/dashboard
+// (np. stara karta przeglądarki z auto-pollingiem).
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/dashboard" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ip := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
+		if ip == "" {
+			ip = r.RemoteAddr
+		}
+		start := time.Now()
+		log.Printf("dashboard: start ip=%s ua=%q", ip, r.UserAgent())
+		next.ServeHTTP(w, r)
+		log.Printf("dashboard: done ip=%s w=%s", ip, time.Since(start).Round(time.Millisecond))
+	})
 }
 
 func securityHeaders(next http.Handler) http.Handler {
