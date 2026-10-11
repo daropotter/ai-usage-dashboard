@@ -30,9 +30,8 @@ const (
 // równoległe żądania oraz zbyt częste próby nie pogłębiały limitu 429 z token
 // endpointu Anthropic.
 const (
-	claudeRefreshSkew       = 5 * time.Minute
 	claudeRefreshCooldown   = 5 * time.Minute
-	claudeRateLimitCooldown = 15 * time.Minute
+	claudeRateLimitCooldown = time.Hour
 	claudeInvalidCooldown   = time.Hour
 )
 
@@ -40,6 +39,12 @@ var (
 	claudeMu      sync.Mutex
 	claudeNextTry time.Time
 	claudeLastErr error
+
+	// Ostatnie udane metryki limitu — pokazywane, gdy refresh/usage zawiedzie
+	// (429, unieważniony token), żeby kafelek nie był pusty.
+	claudeCacheMu sync.Mutex
+	claudeCache   []Metric
+	claudeCacheAt time.Time
 )
 
 type claudeCreds struct {
@@ -99,60 +104,40 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 	}
 	creds, err := readClaudeCreds(path)
 	if err != nil {
-		r.Message = "Nie można odczytać pliku poświadczeń Claude: " + err.Error()
-		return r
+		return claudeFail(r, "no_data", "Nie można odczytać pliku poświadczeń Claude: "+err.Error())
 	}
 	if creds.ClaudeAiOauth.AccessToken == "" {
-		r.Message = "Plik poświadczeń nie zawiera claudeAiOauth.accessToken."
-		return r
+		return claudeFail(r, "no_data", "Plik poświadczeń nie zawiera claudeAiOauth.accessToken.")
 	}
 	r.Configured = true
 
 	usageURL := envOr("CLAUDE_USAGE_URL", defaultClaudeUsageURL)
 
-	// Proaktywne odświeżenie: nie czekamy na 401, gdy token jest blisko wygaśnięcia.
-	if claudeNeedsRefresh(creds) {
-		if err := claudeTryRefresh(client, path, &creds); err != nil {
-			r.Status = "error"
-			r.Message = "Token wymaga odświeżenia, ale się nie udało: " + safeProviderError(err)
-			return r
-		}
-	}
-
+	// Refresh tylko na 401 — bez proaktywnego odświeżania. Token endpoint
+	// Anthropic jest mocno rate-limitowany (429), więc nie dobijamy go przy
+	// każdym wejściu na dashboard, gdy bieżący token jeszcze działa.
 	body, status, err := claudeGet(client, usageURL, creds.ClaudeAiOauth.AccessToken)
 	if err != nil {
-		r.Status = "error"
-		r.Message = safeProviderError(err)
-		return r
+		return claudeFail(r, "error", safeProviderError(err))
 	}
 	// 401 mimo z pozoru ważnego tokenu (np. unieważniony przez inną sesję Claude Code).
 	if status == http.StatusUnauthorized {
 		if creds.ClaudeAiOauth.RefreshToken == "" {
-			r.Status = "error"
-			r.Message = "Token wygasł lub został unieważniony, a plik nie zawiera claudeAiOauth.refreshToken. Zaktualizuj CLAUDE_AUTH_FILE."
-			return r
+			return claudeFail(r, "error", "Token wygasł lub został unieważniony, a plik nie zawiera claudeAiOauth.refreshToken. Zaktualizuj CLAUDE_AUTH_FILE.")
 		}
 		if err := claudeTryRefresh(client, path, &creds); err != nil {
-			r.Status = "error"
-			r.Message = "Token wygasł, odświeżenie nie powiodło się: " + safeProviderError(err)
-			return r
+			return claudeFail(r, "error", "Token wygasł, odświeżenie nie powiodło się: "+safeProviderError(err))
 		}
 		body, status, err = claudeGet(client, usageURL, creds.ClaudeAiOauth.AccessToken)
 		if err != nil {
-			r.Status = "error"
-			r.Message = safeProviderError(err)
-			return r
+			return claudeFail(r, "error", safeProviderError(err))
 		}
 	}
 	if status == http.StatusTooManyRequests {
-		r.Status = "error"
-		r.Message = "Anthropic ogranicza częstotliwość tego endpointu (HTTP 429). Spróbuj ponownie później."
-		return r
+		return claudeFail(r, "error", "Anthropic ogranicza częstotliwość endpointu usage (HTTP 429). Spróbuj ponownie później.")
 	}
 	if status < 200 || status >= 300 {
-		r.Status = "error"
-		r.Message = fmt.Sprintf("HTTP %d: %s", status, compactError(body))
-		return r
+		return claudeFail(r, "error", fmt.Sprintf("HTTP %d: %s", status, compactError(body)))
 	}
 
 	var payload struct {
@@ -162,8 +147,7 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 		SevenDayOpus   *claudeWindow `json:"seven_day_opus"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		r.Message = "Endpoint odpowiedział, ale nie zwrócił poprawnego JSON."
-		return r
+		return claudeFail(r, r.Status, "Endpoint odpowiedział, ale nie zwrócił poprawnego JSON.")
 	}
 
 	add := func(w *claudeWindow, label string) {
@@ -181,20 +165,44 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 		r.Metrics = append(r.Metrics, Metric{Label: "Plan", Value: strings.ToUpper(sub)})
 	}
 	if len(r.Metrics) == 0 {
-		r.Message = "Endpoint odpowiedział, ale nie zwrócił okien limitów (konto bez aktywnej subskrypcji Pro/Max?)."
-		return r
+		return claudeFail(r, r.Status, "Endpoint odpowiedział, ale nie zwrócił okien limitów (konto bez aktywnej subskrypcji Pro/Max?).")
 	}
 	r.Status = "ok"
 	r.Summary = "Limity subskrypcji"
+	claudeSetCachedMetrics(r.Metrics)
 	return r
 }
 
-// claudeNeedsRefresh mówi, czy token wygasa w ciągu claudeRefreshSkew.
-func claudeNeedsRefresh(creds claudeCreds) bool {
-	if creds.ClaudeAiOauth.AccessToken == "" || creds.ClaudeAiOauth.ExpiresAt <= 0 {
-		return false
+// claudeFail zwraca błąd kafelka, a gdy mamy zapamiętane ostatnie udane metryki,
+// dołącza je z adnotacją o czasie pobrania — 429/limit nie zostawia pustego
+// kafelka.
+func claudeFail(r ProviderResult, status, msg string) ProviderResult {
+	if metrics, at, ok := claudeCachedMetrics(); ok {
+		r.Status = "error"
+		r.Metrics = metrics
+		r.Summary = "Limity subskrypcji (dane nieaktualne)"
+		r.Message = fmt.Sprintf("Ostatnie udane pobranie: %s. %s", at.UTC().Format("2006-01-02 15:04 UTC"), msg)
+		return r
 	}
-	return time.Now().Add(claudeRefreshSkew).UnixMilli() >= int64(creds.ClaudeAiOauth.ExpiresAt)
+	r.Status = status
+	r.Message = msg
+	return r
+}
+
+func claudeSetCachedMetrics(m []Metric) {
+	claudeCacheMu.Lock()
+	defer claudeCacheMu.Unlock()
+	claudeCache = append([]Metric(nil), m...)
+	claudeCacheAt = time.Now().UTC()
+}
+
+func claudeCachedMetrics() ([]Metric, time.Time, bool) {
+	claudeCacheMu.Lock()
+	defer claudeCacheMu.Unlock()
+	if len(claudeCache) == 0 {
+		return nil, time.Time{}, false
+	}
+	return append([]Metric(nil), claudeCache...), claudeCacheAt, true
 }
 
 // claudeTryRefresh odświeża token z blokadą i cooldownem. Blokada sprawia, że

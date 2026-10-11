@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 )
 
 func mustRaw(t *testing.T, s string) map[string]any {
@@ -180,6 +182,37 @@ func TestOllamaBalance(t *testing.T) {
 	}
 	if p := metricByLabel(r, "Dokupione środki"); p != nil {
 		t.Fatalf("Dokupione środki nie powinny się pojawić gdy 0: %+v", p)
+	}
+}
+
+// Kafelek Claude: bez cache błąd jest zwykły, z cache pokazuje ostatnie dane.
+func TestClaudeFailWithoutCache(t *testing.T) {
+	claudeCacheMu.Lock()
+	claudeCache = nil
+	claudeCacheAt = time.Time{}
+	claudeCacheMu.Unlock()
+
+	r := baseResult("anthropic", "Claude / Anthropic", "x", true)
+	got := claudeFail(r, "error", "HTTP 429")
+	if got.Status != "error" || got.Message != "HTTP 429" || len(got.Metrics) != 0 {
+		t.Fatalf("bez cache: %+v", got)
+	}
+}
+
+func TestClaudeFailWithCache(t *testing.T) {
+	p := 42.0
+	claudeSetCachedMetrics([]Metric{{Label: "5 h", Value: "42% użyte", Percent: &p}})
+
+	r := baseResult("anthropic", "Claude / Anthropic", "x", true)
+	got := claudeFail(r, "error", "HTTP 429")
+	if got.Status != "error" || len(got.Metrics) != 1 || got.Metrics[0].Label != "5 h" {
+		t.Fatalf("z cache: %+v", got)
+	}
+	if !strings.Contains(got.Message, "Ostatnie udane pobranie") || !strings.Contains(got.Message, "HTTP 429") {
+		t.Fatalf("message: %q", got.Message)
+	}
+	if !strings.Contains(got.Summary, "nieaktualne") {
+		t.Fatalf("summary: %q", got.Summary)
 	}
 }
 
