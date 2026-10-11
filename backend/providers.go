@@ -101,13 +101,14 @@ func fetchOpenCodeQuota(client *http.Client, id, name, envKey, envURL string) Pr
 
 func fetchOllama(client *http.Client) ProviderResult {
 	key := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
-	r := baseResult("ollama-cloud", "Ollama Cloud", "Nieudokumentowany account usage endpoint", key != "")
+	r := baseResult("ollama-cloud", "Ollama Cloud", "Ollama Cloud API (/api/usage)", key != "")
 	if key == "" {
 		r.Message = "Ustaw OLLAMA_API_KEY. Bez klucza kafelek pozostaje w stanie Brak danych."
 		return r
 	}
 
 	endpoint := envOr("OLLAMA_USAGE_URL", "https://ollama.com/api/usage")
+	endpoint = withOllamaRange(endpoint, strings.TrimSpace(os.Getenv("OLLAMA_USAGE_RANGE")))
 	var raw map[string]any
 	if err := doJSON(client, http.MethodGet, endpoint, map[string]string{"Authorization": "Bearer " + key}, &raw); err != nil {
 		r.Status = "error"
@@ -115,6 +116,134 @@ func fetchOllama(client *http.Client) ProviderResult {
 		return r
 	}
 
+	haveQuota := appendOllamaQuotaMetrics(&r, raw)
+	haveUsage := appendOllamaUsageMetrics(&r, raw)
+
+	if len(r.Metrics) == 0 {
+		r.Message = "Endpoint odpowiedział, ale format nie zawiera rozpoznanych danych zużycia. Ustaw OLLAMA_USAGE_URL, jeśli używasz kompatybilnego endpointu/proxy."
+		return r
+	}
+	r.Status = "ok"
+	switch {
+	case haveQuota && haveUsage:
+		r.Summary = "Limity i zużycie Ollama Cloud"
+	case haveQuota:
+		r.Summary = "Limity Ollama Cloud"
+	default:
+		r.Summary = "Zużycie Ollama Cloud"
+	}
+	return r
+}
+
+// withOllamaRange dokłada ?range=24h|7d|30d, jeśli użytkownik ustawił
+// OLLAMA_USAGE_RANGE, a adres jeszcze go nie zawiera.
+func withOllamaRange(endpoint, rng string) string {
+	if rng == "" || strings.Contains(endpoint, "range=") {
+		return endpoint
+	}
+	sep := "?"
+	if strings.Contains(endpoint, "?") {
+		sep = "&"
+	}
+	return endpoint + sep + "range=" + url.QueryEscape(rng)
+}
+
+// appendOllamaUsageMetrics parsuje udokumentowany format Ollama Cloud
+// (GET /api/usage): totals.{request_count,usage_usd,input_tokens,
+// cached_input_tokens,output_tokens} oraz buckets[]. Od 2026-10 endpoint
+// zwraca właśnie ten kształt (wcześniej: limits.session/weekly/monthly).
+func appendOllamaUsageMetrics(r *ProviderResult, raw map[string]any) bool {
+	totals, ok := raw["totals"].(map[string]any)
+	if !ok {
+		return false
+	}
+	window := ollamaRangeLabel(raw)
+	added := false
+
+	if n, ok := findNumber(totals, []string{"request_count"}); ok {
+		r.Metrics = append(r.Metrics, Metric{Label: "Żądania (" + window + ")", Value: formatCount(n)})
+		added = true
+	}
+	if cost, ok := findNumber(totals, []string{"usage_usd", "cost_usd"}); ok {
+		r.Metrics = append(r.Metrics, Metric{Label: "Koszt (" + window + ")", Value: fmt.Sprintf("%.2f USD", cost)})
+		if limit, ok := envFloat("OLLAMA_MONTHLY_LIMIT_USD"); ok && limit > 0 {
+			p := clamp(cost/limit*100, 0, 100)
+			r.Metrics = append(r.Metrics, Metric{Label: "Własny limit miesięczny", Value: fmt.Sprintf("%.2f / %.2f USD", cost, limit), Percent: &p})
+		}
+		added = true
+	}
+	inTok, inOK := findNumber(totals, []string{"input_tokens"})
+	outTok, outOK := findNumber(totals, []string{"output_tokens"})
+	if inOK || outOK {
+		rows := make([]MetricRow, 0, 3)
+		if inOK {
+			rows = append(rows, MetricRow{Label: "Wejściowe", Value: formatCount(inTok)})
+		}
+		if cached, ok := findNumber(totals, []string{"cached_input_tokens"}); ok {
+			rows = append(rows, MetricRow{Label: "Z cache", Value: formatCount(cached)})
+		}
+		if outOK {
+			rows = append(rows, MetricRow{Label: "Wyjściowe", Value: formatCount(outTok)})
+		}
+		r.Metrics = append(r.Metrics, Metric{Label: "Tokeny (" + window + ")", Value: formatCount(inTok + outTok), Rows: rows})
+		added = true
+	}
+	// Rozbicie na przedziały czasowe (godziny/dni) — namiastka rozbicia na
+	// modele, którego endpoint na razie nie udostępnia.
+	if rows, sum := ollamaBucketRows(raw); len(rows) > 0 {
+		r.Metrics = append(r.Metrics, Metric{Label: "Żądania wg dnia (" + window + ")", Value: formatCount(sum), Rows: rows})
+		added = true
+	}
+	return added
+}
+
+// ollamaRangeLabel tłumaczy pole `range` z odpowiedzi na czytelną etykietę.
+func ollamaRangeLabel(raw map[string]any) string {
+	switch findString(raw, []string{"range"}) {
+	case "24h":
+		return "24 h"
+	case "7d", "":
+		return "7 dni"
+	case "30d":
+		return "30 dni"
+	default:
+		return findString(raw, []string{"range"})
+	}
+}
+
+// ollamaBucketRows zwraca niezerowe przedziały z buckets[] jako wiersze
+// (etykieta = data/godzina początku, wartość = liczba żądań) i ich sumę.
+func ollamaBucketRows(raw map[string]any) ([]MetricRow, float64) {
+	arr, ok := raw["buckets"].([]any)
+	if !ok {
+		return nil, 0
+	}
+	rows := make([]MetricRow, 0, len(arr))
+	sum := 0.0
+	for _, it := range arr {
+		o, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		n, ok := findNumber(o, []string{"request_count"})
+		if !ok || n <= 0 {
+			continue
+		}
+		label := findString(o, []string{"from"})
+		if len(label) >= 10 {
+			label = label[:10]
+		}
+		rows = append(rows, MetricRow{Label: label, Value: formatCount(n)})
+		sum += n
+	}
+	return rows, sum
+}
+
+// appendOllamaQuotaMetrics obsługuje starszy, nieudokumentowany format
+// (/api/usage z limits.session|weekly|monthly.usage jako ułamek 0..1 oraz
+// activity.cost). Ollama przełącza kształt odpowiedzi, więc trzymamy oba.
+func appendOllamaQuotaMetrics(r *ProviderResult, raw map[string]any) bool {
+	added := false
 	candidates := []struct {
 		keys  []string
 		label string
@@ -127,9 +256,8 @@ func fetchOllama(client *http.Client) ProviderResult {
 		if m, ok := findObject(raw, c.keys); ok {
 			p, found := findPercent(m)
 			if !found {
-				// Ollama Cloud /api/usage zwraca limits.<okno>.usage jako ułamek
-				// 0..1 (np. 0.932 = 93,2% wykorzystania). Wartości >1 traktujemy
-				// jako już wyrażone w procentach.
+				// limits.<okno>.usage to ułamek 0..1 (np. 0.932 = 93,2%
+				// wykorzystania). Wartości >1 traktujemy jako już w procentach.
 				if u, ok := findNumber(m, []string{"usage", "used"}); ok {
 					if u <= 1 {
 						u *= 100
@@ -144,10 +272,11 @@ func fetchOllama(client *http.Client) ProviderResult {
 					reset = ollamaMonthlyReset(time.Now().UTC())
 				}
 				r.Metrics = append(r.Metrics, Metric{Label: c.label, Value: usedPercentLabel(p), Percent: &p, ResetAt: reset})
+				added = true
 			}
 		}
 	}
-	// Dodatkowe dane z formatu Ollama Cloud: rozbicie żądań na modele i koszt overage.
+	// Rozbicie żądań na modele (starszy format) i koszt overage.
 	if m, ok := findObject(raw, []string{"monthly", "month", "monthly_usage"}); ok {
 		if arr, ok := m["models"].([]any); ok {
 			type modelUse struct {
@@ -176,21 +305,22 @@ func fetchOllama(client *http.Client) ProviderResult {
 					rows = append(rows, MetricRow{Label: x.name, Value: fmt.Sprintf("%d", x.n)})
 				}
 				r.Metrics = append(r.Metrics, Metric{Label: "Żądania wg modelu (miesiąc)", Value: fmt.Sprintf("%d", total), Rows: rows})
+				added = true
 			}
 		}
 	}
 	if act, ok := raw["activity"].(map[string]any); ok {
 		if cost, ok := findNumber(act, []string{"cost"}); ok && cost > 0 {
 			r.Metrics = append(r.Metrics, Metric{Label: "Koszt (4 tyg.)", Value: fmt.Sprintf("%.2f USD", cost)})
+			added = true
 		}
 	}
-	if len(r.Metrics) == 0 {
-		r.Message = "Endpoint odpowiedział, ale format nie zawiera rozpoznanych danych quota. Ustaw OLLAMA_USAGE_URL, jeśli używasz kompatybilnego endpointu/proxy."
-		return r
-	}
-	r.Status = "ok"
-	r.Summary = "Limity Ollama Cloud"
-	return r
+	return added
+}
+
+// formatCount formatuje liczbę całkowitą (żądania, tokeny) bez separatorów.
+func formatCount(v float64) string {
+	return strconv.FormatInt(int64(math.Round(v)), 10)
 }
 
 func fetchOpenAI(client *http.Client) ProviderResult {

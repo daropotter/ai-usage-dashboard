@@ -18,10 +18,14 @@ Dashboard pokazuje zawsze 6 kafelków (w tej kolejności):
 3. **Claude / Anthropic** — limity subskrypcji Pro/Max: 5 h / tydzień oraz
    tygodniowe per model, z nieoficjalnego `api.anthropic.com/api/oauth/usage`
    (to samo, co `/usage` w Claude Code). Wymaga `credentials.json` z Claude Code.
-4. **Ollama Cloud** — best-effort `GET https://ollama.com/api/usage`: miesięczne
-   zużycie (%) oraz żądania wg modelu. Endpoint nie jest stabilnym publicznym
-   kontraktem; gdy nie działa lub zmieni format, kafelek informuje o braku danych.
-   Nie zwraca daty resetu — jest ona wyliczana z `OLLAMA_RESET_ANCHOR`.
+4. **Ollama Cloud** — `GET https://ollama.com/api/usage` (Bearer `OLLAMA_API_KEY`).
+   Od października 2026 endpoint zwraca udokumentowane statystyki zużycia:
+   `totals.request_count`, `totals.usage_usd`, tokeny oraz rozbicie na przedziały
+   (`buckets`). Backend nadal rozpoznaje starszy format
+   `limits.session|weekly|monthly.usage` (ułamek limitu 0..1) i `activity.cost`.
+   API nie podaje kwoty limitu, więc procent pojawia się tylko przy lokalnym
+   `OLLAMA_MONTHLY_LIMIT_USD`; datę resetu starego limitu wylicza
+   `OLLAMA_RESET_ANCHOR`. Okno można wybrać przez `OLLAMA_USAGE_RANGE`.
 5. **OpenCode Go A** — quota 5 h / tydzień / miesiąc z
    `GET https://opencode.ai/zen/go/v1/usage`.
 6. **OpenCode Go B** — jak wyżej, dla drugiego konta
@@ -103,13 +107,15 @@ Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
       "name": "Ollama Cloud",
       "status": "ok",
       "configured": true,
-      "summary": "Limity Ollama Cloud",
-      "source": "Nieudokumentowany account usage endpoint",
+      "summary": "Zużycie Ollama Cloud",
+      "source": "Ollama Cloud API (/api/usage)",
       "metrics": [
-        {"label":"Miesiąc","value":"94.2% użyte","percent":94.2,"resetAt":"2026-01-01T00:00:00Z"},
-        {"label":"Żądania wg modelu (miesiąc)","value":"7035","rows":[
-          {"label":"deepseek-v4-pro:0813","value":"4148"},
-          {"label":"deepseek-v4.1-flash","value":"2832"}
+        {"label":"Żądania (7 dni)","value":"7035"},
+        {"label":"Koszt (7 dni)","value":"12.44 USD"},
+        {"label":"Tokeny (7 dni)","value":"4180000","rows":[
+          {"label":"Wejściowe","value":"3900000"},
+          {"label":"Z cache","value":"1200000"},
+          {"label":"Wyjściowe","value":"280000"}
         ]}
       ]
     }
@@ -128,7 +134,9 @@ Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
 | `OPENAI_MONTHLY_LIMIT_USD` | opcjonalny lokalny budżet OpenAI (pasek) |
 | `OPENCODE_GO_API_KEY` | OpenCode Go A |
 | `OPENCODE_GO_B_API_KEY` | OpenCode Go B |
-| `OLLAMA_API_KEY` | Ollama Cloud |
+| `OLLAMA_API_KEY` | Ollama Cloud (`GET https://ollama.com/api/usage`) |
+| `OLLAMA_USAGE_RANGE` | opcjonalne okno zużycia: `24h`, `7d` (domyślne API) lub `30d` |
+| `OLLAMA_MONTHLY_LIMIT_USD` | opcjonalny lokalny budżet (pasek procentowy dla kosztu) |
 | `OLLAMA_RESET_ANCHOR` | znana data resetu miesięcznego Ollamy (RFC3339), przesuwana co miesiąc |
 | `CHATGPT_AUTH_FILE` | ścieżka do `auth.json` z Codex CLI (kafelek ChatGPT) |
 | `CLAUDE_AUTH_FILE` | ścieżka do `.credentials.json` z Claude Code (kafelek Claude) |
