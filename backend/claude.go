@@ -75,10 +75,19 @@ func (e *claudeHTTPError) Error() string {
 }
 
 // claudeCooldownError oznacza, że sami wstrzymaliśmy kolejne próby odświeżenia.
-type claudeCooldownError struct{ Until time.Time }
+// Reason niesie prawdziwą przyczynę ostatniego błędu (np. HTTP 429, unieważniony
+// refresh token), żeby komunikat nie zrzucał wszystkiego na "limit Anthropic".
+type claudeCooldownError struct {
+	Until  time.Time
+	Reason string
+}
 
 func (e *claudeCooldownError) Error() string {
-	return "odświeżanie wstrzymane do " + e.Until.UTC().Format("15:04:05Z") + " (limit po stronie Anthropic)"
+	msg := "odświeżanie tokenu Claude wstrzymane do " + e.Until.UTC().Format("15:04:05Z")
+	if e.Reason != "" {
+		msg += " (ostatni błąd refreshu: " + e.Reason + ")"
+	}
+	return msg
 }
 
 func fetchAnthropic(client *http.Client) ProviderResult {
@@ -195,7 +204,11 @@ func claudeTryRefresh(client *http.Client, path string, creds *claudeCreds) erro
 	defer claudeMu.Unlock()
 
 	if time.Now().Before(claudeNextTry) {
-		return &claudeCooldownError{Until: claudeNextTry}
+		reason := ""
+		if claudeLastErr != nil {
+			reason = safeProviderError(claudeLastErr)
+		}
+		return &claudeCooldownError{Until: claudeNextTry, Reason: reason}
 	}
 	// Inne żądanie mogło już odświeżyć plik — użyj świeższych danych.
 	if fresh, err := readClaudeCreds(path); err == nil && fresh.ClaudeAiOauth.AccessToken != creds.ClaudeAiOauth.AccessToken {
