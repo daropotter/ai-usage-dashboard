@@ -1,3 +1,9 @@
+# Lokalny/dev projekt compose. Celowo INNA nazwa niż produkcyjny stack
+# (`name: ai-usage-dashboard` w prod-stack/ai-usage-dashboard),
+# żeby `docker compose up/down` z tego katalogu nie dotknął produkcyjnego
+# kontenera `ai-usage-dashboard-prod`.
+name: ai-usage-dashboard-dev
+
 services:
   dashboard:
     build: .
