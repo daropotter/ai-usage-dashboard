@@ -5,35 +5,46 @@ Read-only dashboard of usage and limits for **OpenAI**, **ChatGPT (subscription)
 
 ## Tiles
 
-The dashboard always shows 7 tiles (in this order):
+Tiles are **configured on the backend through ENV**. The frontend has no list of
+providers: it renders whatever `/api/dashboard` returns, in that order.
 
-1. **OpenAI** — organization cost from the Organization Costs API
-   (`GET /v1/organization/costs`). This is **not** a ChatGPT subscription meter.
-   Requires a key with organization admin permissions
-   (`OPENAI_ADMIN_API_KEY`; falls back to `OPENAI_API_KEY`). Optionally
-   `OPENAI_MONTHLY_LIMIT_USD` adds a bar for a custom (local) budget.
-2. **ChatGPT (subscription)** — 5 h / weekly subscription limits from the
-   unofficial ChatGPT backend (`chatgpt.com/backend-api/wham/usage`) — the same
-   one Codex CLI uses. Requires the `auth.json` file from Codex CLI (see ENV).
-3. **Claude / Anthropic** — Pro/Max subscription limits: 5 h / weekly and
-   weekly per model, from the unofficial `api.anthropic.com/api/oauth/usage`
-   (the same as `/usage` in Claude Code). Requires `credentials.json` from Claude Code.
-4. **Ollama Cloud** — `GET https://ollama.com/api/usage` (Bearer `OLLAMA_API_KEY`).
-   Since October 2026 the endpoint returns documented usage statistics:
-   `totals.request_count`, `totals.usage_usd`, tokens and a breakdown into
-   buckets (`buckets`). The backend still recognises the older format
-   `limits.session|weekly|monthly.usage` (limit fraction 0..1) and `activity.cost`.
-   The window is chosen with `OLLAMA_USAGE_RANGE` (`24h`|`7d`|`30d`).
-5. **Ollama Cloud — limit** — `GET https://ollama.com/api/balance`: monthly
-   limit (`allowance_usd`), remaining credits (`balance_usd`), purchased credits
-   and the **reset date** (`period.until`). The bar is `% = (allowance - balance)/allowance`.
-   Because of this the reset date comes from the API and the manual
-   `OLLAMA_RESET_ANCHOR` is no longer needed. (A per-model breakdown is still
-   not exposed by the API — only in the `ollama.com/settings` UI.)
-6. **OpenCode Go A** — 5 h / weekly / monthly quota from
-   `GET https://opencode.ai/zen/go/v1/usage`.
-7. **OpenCode Go B** — as above, for the second account
-   (`OPENCODE_GO_B_API_KEY`).
+```env
+TILES=claude,opencode-a,opencode-b   # ids, in display order
+
+TILE_CLAUDE_TYPE=claude
+TILE_CLAUDE_AUTH_FILE=/secrets/claude-credentials.json
+
+TILE_OPENCODE_A_TYPE=opencode-go
+TILE_OPENCODE_A_NAME=OpenCode Go A
+TILE_OPENCODE_A_API_KEY=...
+
+TILE_OPENCODE_B_TYPE=opencode-go
+TILE_OPENCODE_B_NAME=OpenCode Go B
+TILE_OPENCODE_B_API_KEY=...
+```
+
+Each tile reads `TILE_<ID>_*`, where `<ID>` is the tile id upper-cased with
+`-` → `_`. `TYPE` is required. `NAME` is optional (each type has a default).
+The tile id is also its `id` in the API. Several tiles can use the same type,
+for example two accounts of one provider. `.env.example` sets up all
+7 tiles from the previous fixed layout.
+
+### Tile types
+
+| `TYPE` | Data source | Keys (`TILE_<ID>_…`) |
+| --- | --- | --- |
+| `openai-costs` | OpenAI Organization Costs API (`GET /v1/organization/costs`): organization cost this month. **Not** a ChatGPT subscription meter. Needs an organization admin key. | `API_KEY`, `MONTHLY_LIMIT_USD`? (local budget bar), `URL`? |
+| `chatgpt` | 5 h / weekly subscription limits from the unofficial ChatGPT backend (`chatgpt.com/backend-api/wham/usage`), the same one Codex CLI uses. | `AUTH_FILE` (Codex CLI `auth.json`), `URL`?, `TOKEN_URL`? |
+| `claude` | Pro/Max limits: 5 h / weekly and weekly per model, from the unofficial `api.anthropic.com/api/oauth/usage` (same as `/usage` in Claude Code). | `AUTH_FILE` (Claude Code `.credentials.json`), `URL`?, `TOKEN_URL`? |
+| `ollama-usage` | `GET https://ollama.com/api/usage`: `totals` (requests, USD, tokens) and `buckets`. The older `limits.session\|weekly\|monthly` format is still recognised. | `API_KEY`, `RANGE`? (`24h`\|`7d`\|`30d`), `MONTHLY_LIMIT_USD`?, `RESET_ANCHOR`? (older format only), `URL`? |
+| `ollama-balance` | `GET https://ollama.com/api/balance`: monthly allowance, remaining credits, purchased credits and the **reset date** (`period.until`). The bar shows `(allowance - balance)/allowance`. | `API_KEY`, `URL`? |
+| `opencode-go` | 5 h / weekly / monthly quota from `GET https://opencode.ai/zen/go/v1/usage`. | `API_KEY`, `URL`? |
+
+`?` = optional. `URL` / `TOKEN_URL` override the endpoints (for tests or a proxy).
+
+A tile with a missing key shows `No data`, and its message names the exact
+variable to set. A tile with an unknown `TYPE` shows `Fetch error`. If `TILES`
+is empty, the dashboard says that no tiles are configured.
 
 ## Security assumptions
 
@@ -41,7 +52,7 @@ The dashboard always shows 7 tiles (in this order):
   the frontend never receives keys or fragments of them.
 - The application **does not call generation/chat/completions endpoints** and
   sends no prompts, so refreshing the dashboard does not consume model tokens.
-- Every tile always exists. A missing key, an incompatible API or missing
+- Every configured tile always exists. A missing key, an incompatible API or missing
   metrics yields the `No data` / `Fetch error` state without hiding the tile.
 - `/api/dashboard` responses carry `Cache-Control: no-store`.
 - The frontend refreshes data **manually only** (the "Refresh" button) — there is
@@ -62,7 +73,7 @@ docker compose up --build
 Dashboard: `http://localhost:8080`
 
 The ChatGPT and Claude tiles additionally require mounting the credentials files
-(`CHATGPT_AUTH_FILE`, `CLAUDE_AUTH_FILE`) — see ENV.
+(`TILE_<ID>_AUTH_FILE`) — see Tiles.
 
 ## Development
 
@@ -90,13 +101,13 @@ The Vite proxy forwards `/api/*` to `localhost:8080`.
 
 `GET /api/dashboard`
 
-Example shape (metrics may have optional `resetAt` and `rows`):
+Example shape (`id` is the tile id from `TILES`; metrics may have optional `resetAt` and `rows`):
 
 ```json
 {
   "providers": [
     {
-      "id": "opencode-go",
+      "id": "opencode-a",
       "name": "OpenCode Go A",
       "status": "ok",
       "configured": true,
@@ -107,7 +118,7 @@ Example shape (metrics may have optional `resetAt` and `rows`):
       ]
     },
     {
-      "id": "ollama-cloud",
+      "id": "ollama",
       "name": "Ollama Cloud",
       "status": "ok",
       "configured": true,
@@ -124,7 +135,7 @@ Example shape (metrics may have optional `resetAt` and `rows`):
       ]
     },
     {
-      "id": "ollama-cloud-quota",
+      "id": "ollama-limit",
       "name": "Ollama Cloud — limit",
       "status": "ok",
       "configured": true,
@@ -145,19 +156,7 @@ Example shape (metrics may have optional `resetAt` and `rows`):
 | Variable | Purpose |
 | --- | --- |
 | `PORT` | backend port (default 8080) |
-| `OPENAI_ADMIN_API_KEY` / `OPENAI_API_KEY` | OpenAI Organization Costs API |
-| `OPENAI_MONTHLY_LIMIT_USD` | optional local OpenAI budget (bar) |
-| `OPENCODE_GO_API_KEY` | OpenCode Go A |
-| `OPENCODE_GO_B_API_KEY` | OpenCode Go B |
-| `OLLAMA_API_KEY` | Ollama Cloud (`GET https://ollama.com/api/usage`) |
-| `OLLAMA_USAGE_RANGE` | optional usage window: `24h`, `7d` (API default) or `30d` |
-| `OLLAMA_MONTHLY_LIMIT_USD` | optional local budget (percentage bar for cost) |
-| `OLLAMA_RESET_ANCHOR` | a known Ollama monthly reset date (RFC3339), shifted month by month |
-| `CHATGPT_AUTH_FILE` | path to `auth.json` from Codex CLI (ChatGPT tile) |
-| `CLAUDE_AUTH_FILE` | path to `.credentials.json` from Claude Code (Claude tile) |
-
-Optional endpoint overrides: `OPENAI_COSTS_URL`, `OPENCODE_GO_USAGE_URL`,
-`OPENCODE_GO_B_USAGE_URL`, `OLLAMA_USAGE_URL`, `OLLAMA_BALANCE_URL`,
-`CHATGPT_USAGE_URL`, `CHATGPT_TOKEN_URL`, `CLAUDE_USAGE_URL`, `CLAUDE_TOKEN_URL`.
+| `TILES` | comma-separated tile ids, in display order |
+| `TILE_<ID>_*` | per-tile settings (see Tiles) |
 
 See `.env.example`. Never commit `.env` or credentials files to the repo.

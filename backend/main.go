@@ -42,6 +42,10 @@ type DashboardResponse struct {
 
 func main() {
 	client := &http.Client{Timeout: 12 * time.Second}
+	tiles := loadTiles()
+	for _, t := range tiles {
+		log.Printf("config: tile %s (type=%s, name=%q)", t.ID, t.Type, t.Name)
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -58,21 +62,12 @@ func main() {
 			idx    int
 			result ProviderResult
 		}
-		providers := []func() ProviderResult{
-			func() ProviderResult { return fetchOpenAI(client) },
-			func() ProviderResult { return fetchChatGPT(client) },
-			func() ProviderResult { return fetchAnthropic(client) },
-			func() ProviderResult { return fetchOllama(client) },
-			func() ProviderResult { return fetchOllamaQuota(client) },
-			func() ProviderResult { return fetchOpenCodeGo(client) },
-			func() ProviderResult { return fetchOpenCodeGoB(client) },
+		ch := make(chan indexed, len(tiles))
+		for i, t := range tiles {
+			go func(i int, t TileConfig) { ch <- indexed{i, fetchTile(client, t)} }(i, t)
 		}
-		ch := make(chan indexed, len(providers))
-		for i, fn := range providers {
-			go func(i int, fn func() ProviderResult) { ch <- indexed{i, fn()} }(i, fn)
-		}
-		results := make([]ProviderResult, len(providers))
-		for range providers {
+		results := make([]ProviderResult, len(tiles))
+		for range tiles {
 			v := <-ch
 			results[v.idx] = v.result
 		}

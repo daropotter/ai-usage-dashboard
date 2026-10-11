@@ -35,17 +35,39 @@ const (
 	claudeInvalidCooldown   = time.Hour
 )
 
-var (
-	claudeMu      sync.Mutex
-	claudeNextTry time.Time
-	claudeLastErr error
+// claudeRefreshState is kept per credentials file: the cooldown belongs to the
+// refresh token, not to the tile.
+type claudeRefreshState struct {
+	mu      sync.Mutex
+	nextTry time.Time
+	lastErr error
+}
 
-	// Last successful limit metrics — shown when refresh/usage fails
+type claudeCacheEntry struct {
+	metrics []Metric
+	at      time.Time
+}
+
+var (
+	claudeStatesMu sync.Mutex
+	claudeStates   = map[string]*claudeRefreshState{}
+
+	// Last successful limit metrics per tile — shown when refresh/usage fails
 	// (429, revoked token) so the tile is not empty.
 	claudeCacheMu sync.Mutex
-	claudeCache   []Metric
-	claudeCacheAt time.Time
+	claudeCache   = map[string]claudeCacheEntry{}
 )
+
+func claudeStateFor(path string) *claudeRefreshState {
+	claudeStatesMu.Lock()
+	defer claudeStatesMu.Unlock()
+	st, ok := claudeStates[path]
+	if !ok {
+		st = &claudeRefreshState{}
+		claudeStates[path] = st
+	}
+	return st
+}
 
 type claudeCreds struct {
 	ClaudeAiOauth struct {
@@ -95,11 +117,11 @@ func (e *claudeCooldownError) Error() string {
 	return msg
 }
 
-func fetchAnthropic(client *http.Client) ProviderResult {
-	r := baseResult("anthropic", "Claude / Anthropic", "Claude OAuth usage API (unofficial)", false)
-	path := strings.TrimSpace(os.Getenv("CLAUDE_AUTH_FILE"))
+func fetchAnthropic(client *http.Client, t TileConfig) ProviderResult {
+	r := baseResult(t, "Claude OAuth usage API (unofficial)", false)
+	path := t.Get("AUTH_FILE")
 	if path == "" {
-		r.Message = "Set CLAUDE_AUTH_FILE (path to .credentials.json from Claude Code)."
+		r.Message = "Set " + t.EnvKey("AUTH_FILE") + " (path to .credentials.json from Claude Code)."
 		return r
 	}
 	creds, err := readClaudeCreds(path)
@@ -111,7 +133,7 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 	}
 	r.Configured = true
 
-	usageURL := envOr("CLAUDE_USAGE_URL", defaultClaudeUsageURL)
+	usageURL := t.GetOr("URL", defaultClaudeUsageURL)
 
 	// Refresh only on 401 — no proactive refresh. The Anthropic token endpoint
 	// is heavily rate-limited (429), so we do not hammer it on
@@ -123,9 +145,9 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 	// 401 despite a seemingly valid token (e.g. revoked by another Claude Code session).
 	if status == http.StatusUnauthorized {
 		if creds.ClaudeAiOauth.RefreshToken == "" {
-			return claudeFail(r, "error", "Token expired or was revoked and the file has no claudeAiOauth.refreshToken. Update CLAUDE_AUTH_FILE.")
+			return claudeFail(r, "error", "Token expired or was revoked and the file has no claudeAiOauth.refreshToken. Update "+t.EnvKey("AUTH_FILE")+".")
 		}
-		if err := claudeTryRefresh(client, path, &creds); err != nil {
+		if err := claudeTryRefresh(client, t.GetOr("TOKEN_URL", defaultClaudeTokenURL), path, &creds); err != nil {
 			return claudeFail(r, "error", "Token expired and refresh failed: "+safeProviderError(err))
 		}
 		body, status, err = claudeGet(client, usageURL, creds.ClaudeAiOauth.AccessToken)
@@ -169,7 +191,7 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 	}
 	r.Status = "ok"
 	r.Summary = "Subscription limits"
-	claudeSetCachedMetrics(r.Metrics)
+	claudeSetCachedMetrics(r.ID, r.Metrics)
 	return r
 }
 
@@ -177,7 +199,7 @@ func fetchAnthropic(client *http.Client) ProviderResult {
 // attaches them with a fetch-time note — a 429/limit does not leave an empty
 // tile.
 func claudeFail(r ProviderResult, status, msg string) ProviderResult {
-	if metrics, at, ok := claudeCachedMetrics(); ok {
+	if metrics, at, ok := claudeCachedMetrics(r.ID); ok {
 		r.Status = "error"
 		r.Metrics = metrics
 		r.Summary = "Subscription limits (stale data)"
@@ -189,34 +211,35 @@ func claudeFail(r ProviderResult, status, msg string) ProviderResult {
 	return r
 }
 
-func claudeSetCachedMetrics(m []Metric) {
+func claudeSetCachedMetrics(tileID string, m []Metric) {
 	claudeCacheMu.Lock()
 	defer claudeCacheMu.Unlock()
-	claudeCache = append([]Metric(nil), m...)
-	claudeCacheAt = time.Now().UTC()
+	claudeCache[tileID] = claudeCacheEntry{metrics: append([]Metric(nil), m...), at: time.Now().UTC()}
 }
 
-func claudeCachedMetrics() ([]Metric, time.Time, bool) {
+func claudeCachedMetrics(tileID string) ([]Metric, time.Time, bool) {
 	claudeCacheMu.Lock()
 	defer claudeCacheMu.Unlock()
-	if len(claudeCache) == 0 {
+	e, ok := claudeCache[tileID]
+	if !ok || len(e.metrics) == 0 {
 		return nil, time.Time{}, false
 	}
-	return append([]Metric(nil), claudeCache...), claudeCacheAt, true
+	return append([]Metric(nil), e.metrics...), e.at, true
 }
 
 // claudeTryRefresh refreshes the token with a lock and cooldown. The lock ensures that
 // parallel requests perform only one token exchange.
-func claudeTryRefresh(client *http.Client, path string, creds *claudeCreds) error {
-	claudeMu.Lock()
-	defer claudeMu.Unlock()
+func claudeTryRefresh(client *http.Client, tokenURL, path string, creds *claudeCreds) error {
+	st := claudeStateFor(path)
+	st.mu.Lock()
+	defer st.mu.Unlock()
 
-	if time.Now().Before(claudeNextTry) {
+	if time.Now().Before(st.nextTry) {
 		reason := ""
-		if claudeLastErr != nil {
-			reason = safeProviderError(claudeLastErr)
+		if st.lastErr != nil {
+			reason = safeProviderError(st.lastErr)
 		}
-		return &claudeCooldownError{Until: claudeNextTry, Reason: reason}
+		return &claudeCooldownError{Until: st.nextTry, Reason: reason}
 	}
 	// Another request may have already refreshed the file — use the fresher data.
 	if fresh, err := readClaudeCreds(path); err == nil && fresh.ClaudeAiOauth.AccessToken != creds.ClaudeAiOauth.AccessToken {
@@ -224,7 +247,7 @@ func claudeTryRefresh(client *http.Client, path string, creds *claudeCreds) erro
 		return nil
 	}
 
-	if err := refreshClaude(client, path, creds); err != nil {
+	if err := refreshClaude(client, tokenURL, path, creds); err != nil {
 		cooldown := claudeRefreshCooldown
 		var he *claudeHTTPError
 		if errors.As(err, &he) {
@@ -239,12 +262,12 @@ func claudeTryRefresh(client *http.Client, path string, creds *claudeCreds) erro
 				cooldown = claudeInvalidCooldown
 			}
 		}
-		claudeNextTry = time.Now().Add(cooldown)
-		claudeLastErr = err
+		st.nextTry = time.Now().Add(cooldown)
+		st.lastErr = err
 		return err
 	}
-	claudeNextTry = time.Time{}
-	claudeLastErr = nil
+	st.nextTry = time.Time{}
+	st.lastErr = nil
 	return nil
 }
 
@@ -286,7 +309,7 @@ func readClaudeCreds(path string) (claudeCreds, error) {
 
 // refreshClaude wymienia refresh_token na nowy access token i zapisuje zrotowane
 // values back to the file.
-func refreshClaude(client *http.Client, path string, creds *claudeCreds) error {
+func refreshClaude(client *http.Client, tokenURL, path string, creds *claudeCreds) error {
 	reqBody, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": creds.ClaudeAiOauth.RefreshToken,
@@ -295,7 +318,6 @@ func refreshClaude(client *http.Client, path string, creds *claudeCreds) error {
 	if err != nil {
 		return err
 	}
-	tokenURL := envOr("CLAUDE_TOKEN_URL", defaultClaudeTokenURL)
 	req, err := http.NewRequest(http.MethodPost, tokenURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return err

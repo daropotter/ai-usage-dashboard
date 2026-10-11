@@ -1,19 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Activity, AlertTriangle, CheckCircle2, Cloud, RefreshCw, ShieldCheck } from 'lucide-react'
 
 type Metric = { label:string; value:string; percent?:number; resetAt?:string; rows?:{label:string;value:string}[] }
 type Provider = { id:string; name:string; status:'ok'|'no_data'|'error'; configured:boolean; summary:string; message?:string; source:string; metrics:Metric[]; updatedAt:string }
 type Dashboard = { providers:Provider[]; updatedAt:string }
-
-const expected: Provider[] = [
-  {id:'openai',name:'OpenAI',status:'no_data',configured:false,summary:'No data',source:'OpenAI',metrics:[],updatedAt:''},
-  {id:'chatgpt',name:'ChatGPT (subscription)',status:'no_data',configured:false,summary:'No data',source:'ChatGPT',metrics:[],updatedAt:''},
-  {id:'anthropic',name:'Claude / Anthropic',status:'no_data',configured:false,summary:'No data',source:'Anthropic',metrics:[],updatedAt:''},
-  {id:'ollama-cloud',name:'Ollama Cloud',status:'no_data',configured:false,summary:'No data',source:'Ollama',metrics:[],updatedAt:''},
-  {id:'ollama-cloud-quota',name:'Ollama Cloud — limit',status:'no_data',configured:false,summary:'No data',source:'Ollama',metrics:[],updatedAt:''},
-  {id:'opencode-go',name:'OpenCode Go A',status:'no_data',configured:false,summary:'No data',source:'OpenCode',metrics:[],updatedAt:''},
-  {id:'opencode-go-b',name:'OpenCode Go B',status:'no_data',configured:false,summary:'No data',source:'OpenCode',metrics:[],updatedAt:''},
-]
 
 function formatReset(value?:string) {
   if (!value) return ''
@@ -72,14 +62,14 @@ export default function App(){
     finally { setLoading(false) }
   },[])
   useEffect(()=>{void load()},[load])
-  const providers=useMemo(()=>expected.map(f=>data?.providers.find(p=>p.id===f.id)??f),[data])
   return <main className="page">
     <section className="hero">
-      <div><div className="kicker"><ShieldCheck size={16}/> Read-only usage monitor</div><h1>AI Usage Dashboard</h1><p>One view for OpenAI, Claude, OpenCode Go and Ollama Cloud. The backend only queries usage/cost endpoints — it never sends prompts to models.</p></div>
+      <div><div className="kicker"><ShieldCheck size={16}/> Read-only usage monitor</div><h1>AI Usage Dashboard</h1><p>One view of AI subscription limits and API usage. The backend only queries usage/cost endpoints — it never sends prompts to models.</p></div>
       <button onClick={()=>void load()} disabled={loading}><RefreshCw size={17} className={loading?'spin':''}/>{loading?'Refreshing…':'Refresh'}</button>
     </section>
-    {error && <div className="globalError">Failed to refresh the dashboard: {error}. Tiles remain visible.</div>}
-    <section className="grid">{providers.map(p=><ProviderCard p={p} key={p.id}/>)}</section>
+    {error && <div className="globalError">Failed to refresh the dashboard: {error}.{data ? ' Showing the last loaded data.' : ''}</div>}
+    {data && data.providers.length === 0 && <div className="globalError">No tiles configured. Set TILES in the backend .env (see .env.example).</div>}
+    <section className="grid">{(data?.providers ?? []).map(p=><ProviderCard p={p} key={p.id}/>)}</section>
     <div className="meta">{data?.updatedAt ? `Last refreshed: ${new Date(data.updatedAt).toLocaleString('en-GB')}` : 'Waiting for data…'} · manual refresh</div>
   </main>
 }

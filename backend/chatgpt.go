@@ -38,11 +38,11 @@ type chatGPTAuth struct {
 	} `json:"tokens"`
 }
 
-func fetchChatGPT(client *http.Client) ProviderResult {
-	r := baseResult("chatgpt", "ChatGPT (subscription)", "ChatGPT backend usage API (unofficial)", false)
-	path := strings.TrimSpace(os.Getenv("CHATGPT_AUTH_FILE"))
+func fetchChatGPT(client *http.Client, t TileConfig) ProviderResult {
+	r := baseResult(t, "ChatGPT backend usage API (unofficial)", false)
+	path := t.Get("AUTH_FILE")
 	if path == "" {
-		r.Message = "Set CHATGPT_AUTH_FILE (path to auth.json from Codex CLI)."
+		r.Message = "Set " + t.EnvKey("AUTH_FILE") + " (path to auth.json from Codex CLI)."
 		return r
 	}
 	auth, err := readChatGPTAuth(path)
@@ -56,7 +56,7 @@ func fetchChatGPT(client *http.Client) ProviderResult {
 	}
 	r.Configured = true
 
-	usageURL := envOr("CHATGPT_USAGE_URL", defaultChatGPTUsageURL)
+	usageURL := t.GetOr("URL", defaultChatGPTUsageURL)
 	body, status, err := chatGPTGet(client, usageURL, auth.Tokens.AccessToken, auth.Tokens.AccountID)
 	if err != nil {
 		r.Status = "error"
@@ -66,10 +66,10 @@ func fetchChatGPT(client *http.Client) ProviderResult {
 	if status == http.StatusUnauthorized {
 		if auth.Tokens.RefreshToken == "" {
 			r.Status = "error"
-			r.Message = "Token expired and the file has no tokens.refresh_token. Update CHATGPT_AUTH_FILE."
+			r.Message = "Token expired and the file has no tokens.refresh_token. Update " + t.EnvKey("AUTH_FILE") + "."
 			return r
 		}
-		if err := refreshChatGPT(client, path, &auth); err != nil {
+		if err := refreshChatGPT(client, t.GetOr("TOKEN_URL", defaultChatGPTTokenURL), path, &auth); err != nil {
 			r.Status = "error"
 			r.Message = "Token expired and refresh failed: " + safeProviderError(err)
 			return r
@@ -177,7 +177,7 @@ func readChatGPTAuth(path string) (chatGPTAuth, error) {
 
 // refreshChatGPT exchanges the refresh token for a new access token and persists
 // the rotated tokens back into the auth file (Codex rotates refresh tokens).
-func refreshChatGPT(client *http.Client, path string, auth *chatGPTAuth) error {
+func refreshChatGPT(client *http.Client, tokenURL, path string, auth *chatGPTAuth) error {
 	reqBody, err := json.Marshal(map[string]string{
 		"client_id":     chatGPTClientID,
 		"grant_type":    "refresh_token",
@@ -186,7 +186,6 @@ func refreshChatGPT(client *http.Client, path string, auth *chatGPTAuth) error {
 	if err != nil {
 		return err
 	}
-	tokenURL := envOr("CHATGPT_TOKEN_URL", defaultChatGPTTokenURL)
 	req, err := http.NewRequest(http.MethodPost, tokenURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return err

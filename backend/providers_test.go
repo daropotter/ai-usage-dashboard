@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 )
 
 func mustRaw(t *testing.T, s string) map[string]any {
@@ -46,10 +45,10 @@ func TestOllamaUsageShape(t *testing.T) {
 	}`)
 
 	var r ProviderResult
-	if !appendOllamaUsageMetrics(&r, raw) {
+	if !appendOllamaUsageMetrics(&r, raw, 0) {
 		t.Fatal("oczekiwano rozpoznania formatu totals/buckets")
 	}
-	if appendOllamaQuotaMetrics(&r, raw) {
+	if appendOllamaQuotaMetrics(&r, raw, "") {
 		t.Fatal("the cloud-usage format should not be counted as the old limits format")
 	}
 
@@ -69,11 +68,10 @@ func TestOllamaUsageShape(t *testing.T) {
 
 // An optional custom USD limit adds a percentage bar.
 func TestOllamaUsageShapeWithBudget(t *testing.T) {
-	t.Setenv("OLLAMA_MONTHLY_LIMIT_USD", "100")
 	raw := mustRaw(t, `{"range":"30d","totals":{"request_count":3,"usage_usd":25}}`)
 
 	var r ProviderResult
-	if !appendOllamaUsageMetrics(&r, raw) {
+	if !appendOllamaUsageMetrics(&r, raw, 100) {
 		t.Fatal("oczekiwano rozpoznania formatu")
 	}
 	m := metricByLabel(r, "Custom monthly limit")
@@ -93,10 +91,10 @@ func TestOllamaLegacySessionWeekly(t *testing.T) {
 	}`)
 
 	var r ProviderResult
-	if appendOllamaUsageMetrics(&r, raw) {
+	if appendOllamaUsageMetrics(&r, raw, 0) {
 		t.Fatal("the older format has no totals and should not be counted as cloud-usage")
 	}
-	if !appendOllamaQuotaMetrics(&r, raw) {
+	if !appendOllamaQuotaMetrics(&r, raw, "") {
 		t.Fatal("oczekiwano rozpoznania formatu limits")
 	}
 	if m := metricByLabel(r, "5 h / session"); m == nil || m.Value != "4.6% used" {
@@ -124,7 +122,7 @@ func TestOllamaLegacyMonthly(t *testing.T) {
 	}`)
 
 	var r ProviderResult
-	if !appendOllamaQuotaMetrics(&r, raw) {
+	if !appendOllamaQuotaMetrics(&r, raw, "") {
 		t.Fatal("oczekiwano rozpoznania formatu monthly")
 	}
 	if m := metricByLabel(r, "Month"); m == nil || m.Value != "23.1% used" || m.ResetAt == "" {
@@ -142,7 +140,7 @@ func TestOllamaLegacyMonthly(t *testing.T) {
 func TestOllamaUnknownShape(t *testing.T) {
 	raw := mustRaw(t, `{"hello":"world"}`)
 	var r ProviderResult
-	if appendOllamaUsageMetrics(&r, raw) || appendOllamaQuotaMetrics(&r, raw) {
+	if appendOllamaUsageMetrics(&r, raw, 0) || appendOllamaQuotaMetrics(&r, raw, "") {
 		t.Fatal("an unknown format should not generate metrics")
 	}
 	if len(r.Metrics) != 0 {
@@ -187,12 +185,7 @@ func TestOllamaBalance(t *testing.T) {
 
 // Claude tile: without cache the error is plain, with cache it shows the last data.
 func TestClaudeFailWithoutCache(t *testing.T) {
-	claudeCacheMu.Lock()
-	claudeCache = nil
-	claudeCacheAt = time.Time{}
-	claudeCacheMu.Unlock()
-
-	r := baseResult("anthropic", "Claude / Anthropic", "x", true)
+	r := baseResult(TileConfig{ID: "claude-no-cache", Name: "Claude"}, "x", true)
 	got := claudeFail(r, "error", "HTTP 429")
 	if got.Status != "error" || got.Message != "HTTP 429" || len(got.Metrics) != 0 {
 		t.Fatalf("without cache: %+v", got)
@@ -201,9 +194,9 @@ func TestClaudeFailWithoutCache(t *testing.T) {
 
 func TestClaudeFailWithCache(t *testing.T) {
 	p := 42.0
-	claudeSetCachedMetrics([]Metric{{Label: "5 h", Value: "42% used", Percent: &p}})
+	claudeSetCachedMetrics("claude-cached", []Metric{{Label: "5 h", Value: "42% used", Percent: &p}})
 
-	r := baseResult("anthropic", "Claude / Anthropic", "x", true)
+	r := baseResult(TileConfig{ID: "claude-cached", Name: "Claude"}, "x", true)
 	got := claudeFail(r, "error", "HTTP 429")
 	if got.Status != "error" || len(got.Metrics) != 1 || got.Metrics[0].Label != "5 h" {
 		t.Fatalf("with cache: %+v", got)

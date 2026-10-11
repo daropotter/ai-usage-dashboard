@@ -7,15 +7,14 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func baseResult(id, name, source string, configured bool) ProviderResult {
-	return ProviderResult{ID: id, Name: name, Source: source, Configured: configured, Status: "no_data", Summary: "No data", Metrics: []Metric{}, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+func baseResult(t TileConfig, source string, configured bool) ProviderResult {
+	return ProviderResult{ID: t.ID, Name: t.Name, Source: source, Configured: configured, Status: "no_data", Summary: "No data", Metrics: []Metric{}, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 }
 
 func doJSON(client *http.Client, method, endpoint string, headers map[string]string, out any) error {
@@ -54,19 +53,11 @@ func compactError(b []byte) string {
 	return s
 }
 
-func fetchOpenCodeGo(client *http.Client) ProviderResult {
-	return fetchOpenCodeQuota(client, "opencode-go", "OpenCode Go A", "OPENCODE_GO_API_KEY", "OPENCODE_GO_USAGE_URL")
-}
-
-func fetchOpenCodeGoB(client *http.Client) ProviderResult {
-	return fetchOpenCodeQuota(client, "opencode-go-b", "OpenCode Go B", "OPENCODE_GO_B_API_KEY", "OPENCODE_GO_B_USAGE_URL")
-}
-
-func fetchOpenCodeQuota(client *http.Client, id, name, envKey, envURL string) ProviderResult {
-	key := strings.TrimSpace(os.Getenv(envKey))
-	r := baseResult(id, name, "OpenCode Go quota API", key != "")
+func fetchOpenCodeQuota(client *http.Client, t TileConfig) ProviderResult {
+	key := t.Get("API_KEY")
+	r := baseResult(t, "OpenCode Go quota API", key != "")
 	if key == "" {
-		r.Message = "Set " + envKey + "."
+		r.Message = "Set " + t.EnvKey("API_KEY") + "."
 		return r
 	}
 
@@ -77,7 +68,7 @@ func fetchOpenCodeQuota(client *http.Client, id, name, envKey, envURL string) Pr
 			ResetsAt string  `json:"resetsAt"`
 		} `json:"usage"`
 	}
-	endpoint := envOr(envURL, "https://opencode.ai/zen/go/v1/usage")
+	endpoint := t.GetOr("URL", "https://opencode.ai/zen/go/v1/usage")
 	if err := doJSON(client, http.MethodGet, endpoint, map[string]string{"Authorization": "Bearer " + key}, &payload); err != nil {
 		r.Status = "error"
 		r.Message = safeProviderError(err)
@@ -99,16 +90,16 @@ func fetchOpenCodeQuota(client *http.Client, id, name, envKey, envURL string) Pr
 	return r
 }
 
-func fetchOllama(client *http.Client) ProviderResult {
-	key := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
-	r := baseResult("ollama-cloud", "Ollama Cloud", "Ollama Cloud API (/api/usage)", key != "")
+func fetchOllama(client *http.Client, t TileConfig) ProviderResult {
+	key := t.Get("API_KEY")
+	r := baseResult(t, "Ollama Cloud API (/api/usage)", key != "")
 	if key == "" {
-		r.Message = "Set OLLAMA_API_KEY. Without a key the tile stays in the No data state."
+		r.Message = "Set " + t.EnvKey("API_KEY") + ". Without a key the tile stays in the No data state."
 		return r
 	}
 
-	endpoint := envOr("OLLAMA_USAGE_URL", "https://ollama.com/api/usage")
-	endpoint = withOllamaRange(endpoint, strings.TrimSpace(os.Getenv("OLLAMA_USAGE_RANGE")))
+	endpoint := t.GetOr("URL", "https://ollama.com/api/usage")
+	endpoint = withOllamaRange(endpoint, t.Get("RANGE"))
 	var raw map[string]any
 	if err := doJSON(client, http.MethodGet, endpoint, map[string]string{"Authorization": "Bearer " + key}, &raw); err != nil {
 		r.Status = "error"
@@ -116,11 +107,12 @@ func fetchOllama(client *http.Client) ProviderResult {
 		return r
 	}
 
-	haveQuota := appendOllamaQuotaMetrics(&r, raw)
-	haveUsage := appendOllamaUsageMetrics(&r, raw)
+	limit, _ := t.Float("MONTHLY_LIMIT_USD")
+	haveQuota := appendOllamaQuotaMetrics(&r, raw, t.Get("RESET_ANCHOR"))
+	haveUsage := appendOllamaUsageMetrics(&r, raw, limit)
 
 	if len(r.Metrics) == 0 {
-		r.Message = "The endpoint responded but the format contains no recognised usage data. Set OLLAMA_USAGE_URL if you use a compatible endpoint/proxy."
+		r.Message = "The endpoint responded but the format contains no recognised usage data. Set " + t.EnvKey("URL") + " if you use a compatible endpoint/proxy."
 		return r
 	}
 	r.Status = "ok"
@@ -136,7 +128,7 @@ func fetchOllama(client *http.Client) ProviderResult {
 }
 
 // withOllamaRange appends ?range=24h|7d|30d if the user set
-// OLLAMA_USAGE_RANGE and the URL does not contain it yet.
+// TILE_<ID>_RANGE and the URL does not contain it yet.
 func withOllamaRange(endpoint, rng string) string {
 	if rng == "" || strings.Contains(endpoint, "range=") {
 		return endpoint
@@ -152,7 +144,8 @@ func withOllamaRange(endpoint, rng string) string {
 // (GET /api/usage): totals.{request_count,usage_usd,input_tokens,
 // cached_input_tokens,output_tokens} and buckets[]. Since 2026-10 the endpoint
 // returns exactly this shape (previously: limits.session/weekly/monthly).
-func appendOllamaUsageMetrics(r *ProviderResult, raw map[string]any) bool {
+// A positive budgetUSD (local limit) adds a percentage bar to the cost.
+func appendOllamaUsageMetrics(r *ProviderResult, raw map[string]any, budgetUSD float64) bool {
 	totals, ok := raw["totals"].(map[string]any)
 	if !ok {
 		return false
@@ -166,9 +159,9 @@ func appendOllamaUsageMetrics(r *ProviderResult, raw map[string]any) bool {
 	}
 	if cost, ok := findNumber(totals, []string{"usage_usd", "cost_usd"}); ok {
 		r.Metrics = append(r.Metrics, Metric{Label: "Cost (" + window + ")", Value: fmt.Sprintf("%.2f USD", cost)})
-		if limit, ok := envFloat("OLLAMA_MONTHLY_LIMIT_USD"); ok && limit > 0 {
-			p := clamp(cost/limit*100, 0, 100)
-			r.Metrics = append(r.Metrics, Metric{Label: "Custom monthly limit", Value: fmt.Sprintf("%.2f / %.2f USD", cost, limit), Percent: &p})
+		if budgetUSD > 0 {
+			p := clamp(cost/budgetUSD*100, 0, 100)
+			r.Metrics = append(r.Metrics, Metric{Label: "Custom monthly limit", Value: fmt.Sprintf("%.2f / %.2f USD", cost, budgetUSD), Percent: &p})
 		}
 		added = true
 	}
@@ -242,7 +235,8 @@ func ollamaBucketRows(raw map[string]any) ([]MetricRow, float64) {
 // appendOllamaQuotaMetrics handles the older, undocumented format
 // (/api/usage with limits.session|weekly|monthly.usage as a 0..1 fraction and
 // activity.cost). Ollama switches the response shape, so we keep both.
-func appendOllamaQuotaMetrics(r *ProviderResult, raw map[string]any) bool {
+// resetAnchor is an optional known monthly reset date (RFC3339).
+func appendOllamaQuotaMetrics(r *ProviderResult, raw map[string]any, resetAnchor string) bool {
 	added := false
 	candidates := []struct {
 		keys  []string
@@ -269,7 +263,7 @@ func appendOllamaQuotaMetrics(r *ProviderResult, raw map[string]any) bool {
 				p = round1(clamp(p, 0, 100))
 				reset := findString(m, []string{"resetsAt", "resets_at", "reset_at", "reset", "resets_in"})
 				if reset == "" && c.label == "Month" {
-					reset = ollamaMonthlyReset(time.Now().UTC())
+					reset = ollamaMonthlyReset(resetAnchor, time.Now().UTC())
 				}
 				r.Metrics = append(r.Metrics, Metric{Label: c.label, Value: usedPercentLabel(p), Percent: &p, ResetAt: reset})
 				added = true
@@ -326,15 +320,15 @@ func formatCount(v float64) string {
 // fetchOllamaQuota is a separate tile with the account quota. GET /api/balance
 // returns the monthly allowance and period (with reset date) — data that is no
 // longer in /api/usage.
-func fetchOllamaQuota(client *http.Client) ProviderResult {
-	key := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
-	r := baseResult("ollama-cloud-quota", "Ollama Cloud — limit", "Ollama Cloud API (/api/balance)", key != "")
+func fetchOllamaQuota(client *http.Client, t TileConfig) ProviderResult {
+	key := t.Get("API_KEY")
+	r := baseResult(t, "Ollama Cloud API (/api/balance)", key != "")
 	if key == "" {
-		r.Message = "Set OLLAMA_API_KEY. Without a key the tile stays in the No data state."
+		r.Message = "Set " + t.EnvKey("API_KEY") + ". Without a key the tile stays in the No data state."
 		return r
 	}
 
-	endpoint := envOr("OLLAMA_BALANCE_URL", "https://ollama.com/api/balance")
+	endpoint := t.GetOr("URL", "https://ollama.com/api/balance")
 	var raw map[string]any
 	if err := doJSON(client, http.MethodGet, endpoint, map[string]string{"Authorization": "Bearer " + key}, &raw); err != nil {
 		r.Status = "error"
@@ -342,7 +336,7 @@ func fetchOllamaQuota(client *http.Client) ProviderResult {
 		return r
 	}
 	if !appendOllamaBalanceMetrics(&r, raw) {
-		r.Message = "The /api/balance endpoint responded but with no recognised quota data. Set OLLAMA_BALANCE_URL if you use a compatible proxy."
+		r.Message = "The /api/balance endpoint responded but with no recognised quota data. Set " + t.EnvKey("URL") + " if you use a compatible proxy."
 		return r
 	}
 	r.Status = "ok"
@@ -353,7 +347,7 @@ func fetchOllamaQuota(client *http.Client) ProviderResult {
 // appendOllamaBalanceMetrics parsuje GET /api/balance:
 // {included:{allowance_usd,balance_usd,period:{until}},purchased:{balance_usd}}.
 // Usage is computed as (allowance - balance)/allowance; period.until is the
-// reset date (previously it had to be guessed via OLLAMA_RESET_ANCHOR).
+// reset date (previously it had to be guessed via a reset anchor).
 func appendOllamaBalanceMetrics(r *ProviderResult, raw map[string]any) bool {
 	added := false
 	included, _ := raw["included"].(map[string]any)
@@ -382,14 +376,11 @@ func appendOllamaBalanceMetrics(r *ProviderResult, raw map[string]any) bool {
 	return added
 }
 
-func fetchOpenAI(client *http.Client) ProviderResult {
-	key := strings.TrimSpace(os.Getenv("OPENAI_ADMIN_API_KEY"))
+func fetchOpenAI(client *http.Client, t TileConfig) ProviderResult {
+	key := t.Get("API_KEY")
+	r := baseResult(t, "OpenAI Organization Costs API", key != "")
 	if key == "" {
-		key = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	}
-	r := baseResult("openai", "OpenAI", "OpenAI Organization Costs API", key != "")
-	if key == "" {
-		r.Message = "Set OPENAI_ADMIN_API_KEY (recommended) or OPENAI_API_KEY. A regular ChatGPT Plus/Pro subscription does not expose this counter through the API."
+		r.Message = "Set " + t.EnvKey("API_KEY") + " (an organization admin key is recommended). A regular ChatGPT Plus/Pro subscription does not expose this counter through the API."
 		return r
 	}
 
@@ -399,7 +390,7 @@ func fetchOpenAI(client *http.Client) ProviderResult {
 	q.Set("start_time", strconv.FormatInt(start, 10))
 	q.Set("bucket_width", "1d")
 	q.Set("limit", "31")
-	endpoint := envOr("OPENAI_COSTS_URL", "https://api.openai.com/v1/organization/costs") + "?" + q.Encode()
+	endpoint := t.GetOr("URL", "https://api.openai.com/v1/organization/costs") + "?" + q.Encode()
 	var payload struct {
 		Data []struct {
 			Results []struct {
@@ -426,7 +417,7 @@ func fetchOpenAI(client *http.Client) ProviderResult {
 		}
 	}
 	r.Metrics = append(r.Metrics, Metric{Label: "Cost this month", Value: fmt.Sprintf("%.2f %s", total, currency)})
-	if limit, ok := envFloat("OPENAI_MONTHLY_LIMIT_USD"); ok && limit > 0 {
+	if limit, ok := t.Float("MONTHLY_LIMIT_USD"); ok && limit > 0 {
 		p := clamp(total/limit*100, 0, 100)
 		r.Metrics = append(r.Metrics, Metric{Label: "Custom monthly limit", Value: fmt.Sprintf("%.2f / %.2f USD", total, limit), Percent: &p})
 	}
@@ -447,11 +438,11 @@ func usedPercentLabel(p float64) string {
 }
 
 // ollamaMonthlyReset returns the nearest reset date of Ollama's monthly limit.
-// The /api/usage endpoint does not provide it, so we compute it from the OLLAMA_RESET_ANCHOR
+// The /api/usage endpoint does not provide it, so we compute it from the anchor
 // (any known reset date; projected into the future month by month). Without an anchor
 // we use an approximation: the 1st day of next month 00:00 UTC.
-func ollamaMonthlyReset(now time.Time) string {
-	if s := strings.TrimSpace(os.Getenv("OLLAMA_RESET_ANCHOR")); s != "" {
+func ollamaMonthlyReset(anchor string, now time.Time) string {
+	if s := strings.TrimSpace(anchor); s != "" {
 		if t, err := time.Parse(time.RFC3339, s); err == nil {
 			return nextMonthlyReset(t.UTC(), now).Format(time.RFC3339)
 		}
@@ -494,14 +485,6 @@ func firstDayNextMonthUTC() string {
 	return next.Format(time.RFC3339)
 }
 
-func envFloat(key string) (float64, bool) {
-	s := strings.TrimSpace(os.Getenv(key))
-	if s == "" {
-		return 0, false
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	return v, err == nil
-}
 func clamp(v, min, max float64) float64 {
 	if v < min {
 		return min
