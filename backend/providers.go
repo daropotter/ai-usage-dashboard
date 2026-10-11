@@ -323,6 +323,65 @@ func formatCount(v float64) string {
 	return strconv.FormatInt(int64(math.Round(v)), 10)
 }
 
+// fetchOllamaQuota to oddzielny kafelek z limitem konta. GET /api/balance
+// zwraca miesięczny allowance i okres (z datą resetu) — danych, których nie ma
+// już w /api/usage.
+func fetchOllamaQuota(client *http.Client) ProviderResult {
+	key := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
+	r := baseResult("ollama-cloud-quota", "Ollama Cloud — limit", "Ollama Cloud API (/api/balance)", key != "")
+	if key == "" {
+		r.Message = "Ustaw OLLAMA_API_KEY. Bez klucza kafelek pozostaje w stanie Brak danych."
+		return r
+	}
+
+	endpoint := envOr("OLLAMA_BALANCE_URL", "https://ollama.com/api/balance")
+	var raw map[string]any
+	if err := doJSON(client, http.MethodGet, endpoint, map[string]string{"Authorization": "Bearer " + key}, &raw); err != nil {
+		r.Status = "error"
+		r.Message = safeProviderError(err) + " Endpoint Ollama Cloud nie jest publicznie gwarantowany."
+		return r
+	}
+	if !appendOllamaBalanceMetrics(&r, raw) {
+		r.Message = "Endpoint /api/balance odpowiedział, ale bez rozpoznanych danych limitu. Ustaw OLLAMA_BALANCE_URL, jeśli używasz kompatybilnego proxy."
+		return r
+	}
+	r.Status = "ok"
+	r.Summary = "Limit miesięczny Ollama Cloud"
+	return r
+}
+
+// appendOllamaBalanceMetrics parsuje GET /api/balance:
+// {included:{allowance_usd,balance_usd,period:{until}},purchased:{balance_usd}}.
+// Wykorzystanie liczymy jako (allowance - balance)/allowance; period.until to
+// data resetu (wcześniej trzeba ją było zgadywać przez OLLAMA_RESET_ANCHOR).
+func appendOllamaBalanceMetrics(r *ProviderResult, raw map[string]any) bool {
+	added := false
+	included, _ := raw["included"].(map[string]any)
+	allowance, hasAllowance := findNumber(included, []string{"allowance_usd", "allowance"})
+	balance, hasBalance := findNumber(included, []string{"balance_usd", "balance"})
+	reset := ""
+	if period, ok := included["period"].(map[string]any); ok {
+		reset = findString(period, []string{"until", "resets_at", "reset_at", "ending_at"})
+	}
+
+	if hasAllowance && allowance > 0 {
+		used := clamp(allowance-balance, 0, allowance)
+		p := round1(clamp(used/allowance*100, 0, 100))
+		r.Metrics = append(r.Metrics, Metric{Label: "Limit miesięczny", Value: fmt.Sprintf("%.2f / %.2f USD", used, allowance), Percent: &p, ResetAt: reset})
+		added = true
+	} else if hasBalance {
+		r.Metrics = append(r.Metrics, Metric{Label: "Środki wliczone", Value: fmt.Sprintf("%.2f USD", balance), ResetAt: reset})
+		added = true
+	}
+	if purchased, ok := raw["purchased"].(map[string]any); ok {
+		if b, ok := findNumber(purchased, []string{"balance_usd", "balance"}); ok && b > 0 {
+			r.Metrics = append(r.Metrics, Metric{Label: "Dokupione środki", Value: fmt.Sprintf("%.2f USD", b)})
+			added = true
+		}
+	}
+	return added
+}
+
 func fetchOpenAI(client *http.Client) ProviderResult {
 	key := strings.TrimSpace(os.Getenv("OPENAI_ADMIN_API_KEY"))
 	if key == "" {

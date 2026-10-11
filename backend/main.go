@@ -63,6 +63,7 @@ func main() {
 			func() ProviderResult { return fetchChatGPT(client) },
 			func() ProviderResult { return fetchAnthropic(client) },
 			func() ProviderResult { return fetchOllama(client) },
+			func() ProviderResult { return fetchOllamaQuota(client) },
 			func() ProviderResult { return fetchOpenCodeGo(client) },
 			func() ProviderResult { return fetchOpenCodeGoB(client) },
 		}

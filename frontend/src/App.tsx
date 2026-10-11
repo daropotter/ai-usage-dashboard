@@ -10,6 +10,7 @@ const expected: Provider[] = [
   {id:'chatgpt',name:'ChatGPT (subskrypcja)',status:'no_data',configured:false,summary:'Brak danych',source:'ChatGPT',metrics:[],updatedAt:''},
   {id:'anthropic',name:'Claude / Anthropic',status:'no_data',configured:false,summary:'Brak danych',source:'Anthropic',metrics:[],updatedAt:''},
   {id:'ollama-cloud',name:'Ollama Cloud',status:'no_data',configured:false,summary:'Brak danych',source:'Ollama',metrics:[],updatedAt:''},
+  {id:'ollama-cloud-quota',name:'Ollama Cloud — limit',status:'no_data',configured:false,summary:'Brak danych',source:'Ollama',metrics:[],updatedAt:''},
   {id:'opencode-go',name:'OpenCode Go A',status:'no_data',configured:false,summary:'Brak danych',source:'OpenCode',metrics:[],updatedAt:''},
   {id:'opencode-go-b',name:'OpenCode Go B',status:'no_data',configured:false,summary:'Brak danych',source:'OpenCode',metrics:[],updatedAt:''},
 ]

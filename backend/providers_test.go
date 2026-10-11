@@ -161,3 +161,44 @@ func TestWithOllamaRange(t *testing.T) {
 		}
 	}
 }
+
+// Nowy kafelek limitu: GET /api/balance (allowance + data resetu).
+func TestOllamaBalance(t *testing.T) {
+	raw := mustRaw(t, `{
+	  "included": {"balance_usd": 0, "allowance_usd": 60,
+	    "period": {"from": "2025-12-01T00:00:00Z", "until": "2026-01-01T00:00:00Z"}},
+	  "purchased": {"balance_usd": 0}
+	}`)
+
+	var r ProviderResult
+	if !appendOllamaBalanceMetrics(&r, raw) {
+		t.Fatal("oczekiwano rozpoznania formatu balance")
+	}
+	m := metricByLabel(r, "Limit miesięczny")
+	if m == nil || m.Value != "60.00 / 60.00 USD" || m.Percent == nil || *m.Percent != 100 || m.ResetAt != "2026-01-01T00:00:00Z" {
+		t.Fatalf("Limit miesięczny = %+v", m)
+	}
+	if p := metricByLabel(r, "Dokupione środki"); p != nil {
+		t.Fatalf("Dokupione środki nie powinny się pojawić gdy 0: %+v", p)
+	}
+}
+
+func TestOllamaBalancePartial(t *testing.T) {
+	raw := mustRaw(t, `{
+	  "included": {"balance_usd": 15, "allowance_usd": 60,
+	    "period": {"until": "2026-01-01T00:00:00Z"}},
+	  "purchased": {"balance_usd": 5}
+	}`)
+
+	var r ProviderResult
+	if !appendOllamaBalanceMetrics(&r, raw) {
+		t.Fatal("oczekiwano rozpoznania formatu balance")
+	}
+	m := metricByLabel(r, "Limit miesięczny")
+	if m == nil || m.Value != "45.00 / 60.00 USD" || m.Percent == nil || *m.Percent != 75 {
+		t.Fatalf("Limit miesięczny = %+v", m)
+	}
+	if p := metricByLabel(r, "Dokupione środki"); p == nil || p.Value != "5.00 USD" {
+		t.Fatalf("Dokupione środki = %+v", p)
+	}
+}

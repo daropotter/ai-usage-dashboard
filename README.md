@@ -5,7 +5,7 @@ Read-only dashboard zużycia i limitów dla **OpenAI**, **ChatGPT (subskrypcja)*
 
 ## Kafelki
 
-Dashboard pokazuje zawsze 6 kafelków (w tej kolejności):
+Dashboard pokazuje zawsze 7 kafelków (w tej kolejności):
 
 1. **OpenAI** — koszt organizacji z Organization Costs API
    (`GET /v1/organization/costs`). To **nie jest** licznik subskrypcji ChatGPT.
@@ -23,12 +23,16 @@ Dashboard pokazuje zawsze 6 kafelków (w tej kolejności):
    `totals.request_count`, `totals.usage_usd`, tokeny oraz rozbicie na przedziały
    (`buckets`). Backend nadal rozpoznaje starszy format
    `limits.session|weekly|monthly.usage` (ułamek limitu 0..1) i `activity.cost`.
-   API nie podaje kwoty limitu, więc procent pojawia się tylko przy lokalnym
-   `OLLAMA_MONTHLY_LIMIT_USD`; datę resetu starego limitu wylicza
-   `OLLAMA_RESET_ANCHOR`. Okno można wybrać przez `OLLAMA_USAGE_RANGE`.
-5. **OpenCode Go A** — quota 5 h / tydzień / miesiąc z
+   Okno wybiera `OLLAMA_USAGE_RANGE` (`24h`|`7d`|`30d`).
+5. **Ollama Cloud — limit** — `GET https://ollama.com/api/balance`: miesięczny
+   limit (`allowance_usd`), pozostałe środki (`balance_usd`), dokupione środki
+   oraz **data resetu** (`period.until`). Pasek `% = (allowance - balance)/allowance`.
+   Dzięki temu data resetu pochodzi z API i nie trzeba już ręcznego
+   `OLLAMA_RESET_ANCHOR`. (Rozbicie na modele wciąż nie jest udostępniane przez
+   API — tylko w UI `ollama.com/settings`.)
+6. **OpenCode Go A** — quota 5 h / tydzień / miesiąc z
    `GET https://opencode.ai/zen/go/v1/usage`.
-6. **OpenCode Go B** — jak wyżej, dla drugiego konta
+7. **OpenCode Go B** — jak wyżej, dla drugiego konta
    (`OPENCODE_GO_B_API_KEY`).
 
 ## Założenia bezpieczeństwa
@@ -118,6 +122,17 @@ Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
           {"label":"Wyjściowe","value":"280000"}
         ]}
       ]
+    },
+    {
+      "id": "ollama-cloud-quota",
+      "name": "Ollama Cloud — limit",
+      "status": "ok",
+      "configured": true,
+      "summary": "Limit miesięczny Ollama Cloud",
+      "source": "Ollama Cloud API (/api/balance)",
+      "metrics": [
+        {"label":"Limit miesięczny","value":"45.00 / 60.00 USD","percent":75,"resetAt":"2026-01-01T00:00:00Z"}
+      ]
     }
   ]
 }
@@ -142,7 +157,7 @@ Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
 | `CLAUDE_AUTH_FILE` | ścieżka do `.credentials.json` z Claude Code (kafelek Claude) |
 
 Opcjonalne nadpisania endpointów: `OPENAI_COSTS_URL`, `OPENCODE_GO_USAGE_URL`,
-`OPENCODE_GO_B_USAGE_URL`, `OLLAMA_USAGE_URL`, `CHATGPT_USAGE_URL`,
-`CHATGPT_TOKEN_URL`, `CLAUDE_USAGE_URL`, `CLAUDE_TOKEN_URL`.
+`OPENCODE_GO_B_USAGE_URL`, `OLLAMA_USAGE_URL`, `OLLAMA_BALANCE_URL`,
+`CHATGPT_USAGE_URL`, `CHATGPT_TOKEN_URL`, `CLAUDE_USAGE_URL`, `CLAUDE_TOKEN_URL`.
 
 Patrz `.env.example`. Do repo nie commituj `.env` ani plików poświadczeń.
