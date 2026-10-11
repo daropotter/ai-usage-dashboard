@@ -101,8 +101,8 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, securityHeaders(logRequests(mux))))
 }
 
-// logRequests pomaga ustalić, kto i jak często odpytuje /api/dashboard
-// (np. stara karta przeglądarki z auto-pollingiem).
+// logRequests helps determine who polls /api/dashboard and how often
+// (e.g. an old browser tab with auto-polling).
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/dashboard" {

@@ -1,68 +1,68 @@
 # AI Usage Dashboard — Go + React
 
-Read-only dashboard zużycia i limitów dla **OpenAI**, **ChatGPT (subskrypcja)**,
-**Claude / Anthropic**, **OpenCode Go** i **Ollama Cloud**.
+Read-only dashboard of usage and limits for **OpenAI**, **ChatGPT (subscription)**,
+**Claude / Anthropic**, **OpenCode Go** and **Ollama Cloud**.
 
-## Kafelki
+## Tiles
 
-Dashboard pokazuje zawsze 7 kafelków (w tej kolejności):
+The dashboard always shows 7 tiles (in this order):
 
-1. **OpenAI** — koszt organizacji z Organization Costs API
-   (`GET /v1/organization/costs`). To **nie jest** licznik subskrypcji ChatGPT.
-   Wymaga klucza z uprawnieniami administracyjnymi organizacji
-   (`OPENAI_ADMIN_API_KEY`; fallback `OPENAI_API_KEY`). Opcjonalnie
-   `OPENAI_MONTHLY_LIMIT_USD` dokłada pasek własnego (lokalnego) budżetu.
-2. **ChatGPT (subskrypcja)** — limity subskrypcji 5 h / tydzień z nieoficjalnego
-   backendu ChatGPT (`chatgpt.com/backend-api/wham/usage`) — tego samego, którego
-   używa Codex CLI. Wymaga pliku `auth.json` z Codex CLI (patrz ENV).
-3. **Claude / Anthropic** — limity subskrypcji Pro/Max: 5 h / tydzień oraz
-   tygodniowe per model, z nieoficjalnego `api.anthropic.com/api/oauth/usage`
-   (to samo, co `/usage` w Claude Code). Wymaga `credentials.json` z Claude Code.
+1. **OpenAI** — organization cost from the Organization Costs API
+   (`GET /v1/organization/costs`). This is **not** a ChatGPT subscription meter.
+   Requires a key with organization admin permissions
+   (`OPENAI_ADMIN_API_KEY`; falls back to `OPENAI_API_KEY`). Optionally
+   `OPENAI_MONTHLY_LIMIT_USD` adds a bar for a custom (local) budget.
+2. **ChatGPT (subscription)** — 5 h / weekly subscription limits from the
+   unofficial ChatGPT backend (`chatgpt.com/backend-api/wham/usage`) — the same
+   one Codex CLI uses. Requires the `auth.json` file from Codex CLI (see ENV).
+3. **Claude / Anthropic** — Pro/Max subscription limits: 5 h / weekly and
+   weekly per model, from the unofficial `api.anthropic.com/api/oauth/usage`
+   (the same as `/usage` in Claude Code). Requires `credentials.json` from Claude Code.
 4. **Ollama Cloud** — `GET https://ollama.com/api/usage` (Bearer `OLLAMA_API_KEY`).
-   Od października 2026 endpoint zwraca udokumentowane statystyki zużycia:
-   `totals.request_count`, `totals.usage_usd`, tokeny oraz rozbicie na przedziały
-   (`buckets`). Backend nadal rozpoznaje starszy format
-   `limits.session|weekly|monthly.usage` (ułamek limitu 0..1) i `activity.cost`.
-   Okno wybiera `OLLAMA_USAGE_RANGE` (`24h`|`7d`|`30d`).
-5. **Ollama Cloud — limit** — `GET https://ollama.com/api/balance`: miesięczny
-   limit (`allowance_usd`), pozostałe środki (`balance_usd`), dokupione środki
-   oraz **data resetu** (`period.until`). Pasek `% = (allowance - balance)/allowance`.
-   Dzięki temu data resetu pochodzi z API i nie trzeba już ręcznego
-   `OLLAMA_RESET_ANCHOR`. (Rozbicie na modele wciąż nie jest udostępniane przez
-   API — tylko w UI `ollama.com/settings`.)
-6. **OpenCode Go A** — quota 5 h / tydzień / miesiąc z
+   Since October 2026 the endpoint returns documented usage statistics:
+   `totals.request_count`, `totals.usage_usd`, tokens and a breakdown into
+   buckets (`buckets`). The backend still recognises the older format
+   `limits.session|weekly|monthly.usage` (limit fraction 0..1) and `activity.cost`.
+   The window is chosen with `OLLAMA_USAGE_RANGE` (`24h`|`7d`|`30d`).
+5. **Ollama Cloud — limit** — `GET https://ollama.com/api/balance`: monthly
+   limit (`allowance_usd`), remaining credits (`balance_usd`), purchased credits
+   and the **reset date** (`period.until`). The bar is `% = (allowance - balance)/allowance`.
+   Because of this the reset date comes from the API and the manual
+   `OLLAMA_RESET_ANCHOR` is no longer needed. (A per-model breakdown is still
+   not exposed by the API — only in the `ollama.com/settings` UI.)
+6. **OpenCode Go A** — 5 h / weekly / monthly quota from
    `GET https://opencode.ai/zen/go/v1/usage`.
-7. **OpenCode Go B** — jak wyżej, dla drugiego konta
+7. **OpenCode Go B** — as above, for the second account
    (`OPENCODE_GO_B_API_KEY`).
 
-## Założenia bezpieczeństwa
+## Security assumptions
 
-- Klucze i tokeny czyta wyłącznie backend (z ENV lub z zamontowanych plików);
-  frontend nigdy nie otrzymuje kluczy ani ich fragmentów.
-- Aplikacja **nie wywołuje endpointów generowania/chat/completions** i nie wysyła
-  promptów, więc samo odświeżenie dashboardu nie zużywa tokenów modeli.
-- Każdy kafelek istnieje zawsze. Brak klucza, brak kompatybilnego API albo brak
-  metryk daje stan `Brak danych` / `Błąd pobierania`, bez ukrywania kafelka.
-- Odpowiedzi `/api/dashboard` mają `Cache-Control: no-store`.
-- Frontend odświeża dane **tylko ręcznie** (przycisk „Odśwież") — brak
-  automatycznego odpytywania w tle.
-- Auto-odświeżanie tokenów ChatGPT/Claude zapisuje zrotowane tokeny z powrotem do
-  zamontowanego pliku (poza gitem). Uwaga: ten sam `refresh_token` używany
-  równolegle lokalnie i na serwerze wzajemnie się unieważnia.
+- Keys and tokens are read only by the backend (from ENV or mounted files);
+  the frontend never receives keys or fragments of them.
+- The application **does not call generation/chat/completions endpoints** and
+  sends no prompts, so refreshing the dashboard does not consume model tokens.
+- Every tile always exists. A missing key, an incompatible API or missing
+  metrics yields the `No data` / `Fetch error` state without hiding the tile.
+- `/api/dashboard` responses carry `Cache-Control: no-store`.
+- The frontend refreshes data **manually only** (the "Refresh" button) — there is
+  no automatic background polling.
+- ChatGPT/Claude token auto-refresh writes the rotated tokens back to the
+  mounted file (kept out of git). Note: the same `refresh_token` used
+  concurrently locally and on a server invalidates each other.
 
-## Uruchomienie przez Docker
+## Running with Docker
 
 ```bash
 cp .env.example .env
-# wpisz potrzebne klucze do .env
+# put the keys you need into .env
 
 docker compose up --build
 ```
 
 Dashboard: `http://localhost:8080`
 
-Kafelki ChatGPT i Claude wymagają dodatkowo zamontowania plików poświadczeń
-(`CHATGPT_AUTH_FILE`, `CLAUDE_AUTH_FILE`) — patrz ENV.
+The ChatGPT and Claude tiles additionally require mounting the credentials files
+(`CHATGPT_AUTH_FILE`, `CLAUDE_AUTH_FILE`) — see ENV.
 
 ## Development
 
@@ -84,13 +84,13 @@ npm install
 npm run dev
 ```
 
-Vite proxy przekazuje `/api/*` do `localhost:8080`.
+The Vite proxy forwards `/api/*` to `localhost:8080`.
 
-## API dashboardu
+## Dashboard API
 
 `GET /api/dashboard`
 
-Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
+Example shape (metrics may have optional `resetAt` and `rows`):
 
 ```json
 {
@@ -100,10 +100,10 @@ Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
       "name": "OpenCode Go A",
       "status": "ok",
       "configured": true,
-      "summary": "Limity subskrypcji",
+      "summary": "Subscription limits",
       "source": "OpenCode Go quota API",
       "metrics": [
-        {"label":"5 h","value":"12.0% użyte","percent":12,"resetAt":"2026-09-28T15:00:00Z"}
+        {"label":"5 h","value":"12.0% used","percent":12,"resetAt":"2026-09-28T15:00:00Z"}
       ]
     },
     {
@@ -111,15 +111,15 @@ Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
       "name": "Ollama Cloud",
       "status": "ok",
       "configured": true,
-      "summary": "Zużycie Ollama Cloud",
+      "summary": "Ollama Cloud usage",
       "source": "Ollama Cloud API (/api/usage)",
       "metrics": [
-        {"label":"Żądania (7 dni)","value":"7035"},
-        {"label":"Koszt (7 dni)","value":"12.44 USD"},
-        {"label":"Tokeny (7 dni)","value":"4180000","rows":[
-          {"label":"Wejściowe","value":"3900000"},
-          {"label":"Z cache","value":"1200000"},
-          {"label":"Wyjściowe","value":"280000"}
+        {"label":"Requests (7 days)","value":"7035"},
+        {"label":"Cost (7 days)","value":"12.44 USD"},
+        {"label":"Tokens (7 days)","value":"4180000","rows":[
+          {"label":"Input","value":"3900000"},
+          {"label":"Cached","value":"1200000"},
+          {"label":"Output","value":"280000"}
         ]}
       ]
     },
@@ -128,10 +128,10 @@ Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
       "name": "Ollama Cloud — limit",
       "status": "ok",
       "configured": true,
-      "summary": "Limit miesięczny Ollama Cloud",
+      "summary": "Ollama Cloud monthly limit",
       "source": "Ollama Cloud API (/api/balance)",
       "metrics": [
-        {"label":"Limit miesięczny","value":"45.00 / 60.00 USD","percent":75,"resetAt":"2026-01-01T00:00:00Z"}
+        {"label":"Monthly limit","value":"45.00 / 60.00 USD","percent":75,"resetAt":"2026-01-01T00:00:00Z"}
       ]
     }
   ]
@@ -142,22 +142,22 @@ Przykładowy kształt (metryki mogą mieć opcjonalne `resetAt` i `rows`):
 
 ## ENV
 
-| Zmienna | Do czego |
+| Variable | Purpose |
 | --- | --- |
-| `PORT` | port backendu (domyślnie 8080) |
+| `PORT` | backend port (default 8080) |
 | `OPENAI_ADMIN_API_KEY` / `OPENAI_API_KEY` | OpenAI Organization Costs API |
-| `OPENAI_MONTHLY_LIMIT_USD` | opcjonalny lokalny budżet OpenAI (pasek) |
+| `OPENAI_MONTHLY_LIMIT_USD` | optional local OpenAI budget (bar) |
 | `OPENCODE_GO_API_KEY` | OpenCode Go A |
 | `OPENCODE_GO_B_API_KEY` | OpenCode Go B |
 | `OLLAMA_API_KEY` | Ollama Cloud (`GET https://ollama.com/api/usage`) |
-| `OLLAMA_USAGE_RANGE` | opcjonalne okno zużycia: `24h`, `7d` (domyślne API) lub `30d` |
-| `OLLAMA_MONTHLY_LIMIT_USD` | opcjonalny lokalny budżet (pasek procentowy dla kosztu) |
-| `OLLAMA_RESET_ANCHOR` | znana data resetu miesięcznego Ollamy (RFC3339), przesuwana co miesiąc |
-| `CHATGPT_AUTH_FILE` | ścieżka do `auth.json` z Codex CLI (kafelek ChatGPT) |
-| `CLAUDE_AUTH_FILE` | ścieżka do `.credentials.json` z Claude Code (kafelek Claude) |
+| `OLLAMA_USAGE_RANGE` | optional usage window: `24h`, `7d` (API default) or `30d` |
+| `OLLAMA_MONTHLY_LIMIT_USD` | optional local budget (percentage bar for cost) |
+| `OLLAMA_RESET_ANCHOR` | a known Ollama monthly reset date (RFC3339), shifted month by month |
+| `CHATGPT_AUTH_FILE` | path to `auth.json` from Codex CLI (ChatGPT tile) |
+| `CLAUDE_AUTH_FILE` | path to `.credentials.json` from Claude Code (Claude tile) |
 
-Opcjonalne nadpisania endpointów: `OPENAI_COSTS_URL`, `OPENCODE_GO_USAGE_URL`,
+Optional endpoint overrides: `OPENAI_COSTS_URL`, `OPENCODE_GO_USAGE_URL`,
 `OPENCODE_GO_B_USAGE_URL`, `OLLAMA_USAGE_URL`, `OLLAMA_BALANCE_URL`,
 `CHATGPT_USAGE_URL`, `CHATGPT_TOKEN_URL`, `CLAUDE_USAGE_URL`, `CLAUDE_TOKEN_URL`.
 
-Patrz `.env.example`. Do repo nie commituj `.env` ani plików poświadczeń.
+See `.env.example`. Never commit `.env` or credentials files to the repo.

@@ -6,13 +6,13 @@ type Provider = { id:string; name:string; status:'ok'|'no_data'|'error'; configu
 type Dashboard = { providers:Provider[]; updatedAt:string }
 
 const expected: Provider[] = [
-  {id:'openai',name:'OpenAI',status:'no_data',configured:false,summary:'Brak danych',source:'OpenAI',metrics:[],updatedAt:''},
-  {id:'chatgpt',name:'ChatGPT (subskrypcja)',status:'no_data',configured:false,summary:'Brak danych',source:'ChatGPT',metrics:[],updatedAt:''},
-  {id:'anthropic',name:'Claude / Anthropic',status:'no_data',configured:false,summary:'Brak danych',source:'Anthropic',metrics:[],updatedAt:''},
-  {id:'ollama-cloud',name:'Ollama Cloud',status:'no_data',configured:false,summary:'Brak danych',source:'Ollama',metrics:[],updatedAt:''},
-  {id:'ollama-cloud-quota',name:'Ollama Cloud — limit',status:'no_data',configured:false,summary:'Brak danych',source:'Ollama',metrics:[],updatedAt:''},
-  {id:'opencode-go',name:'OpenCode Go A',status:'no_data',configured:false,summary:'Brak danych',source:'OpenCode',metrics:[],updatedAt:''},
-  {id:'opencode-go-b',name:'OpenCode Go B',status:'no_data',configured:false,summary:'Brak danych',source:'OpenCode',metrics:[],updatedAt:''},
+  {id:'openai',name:'OpenAI',status:'no_data',configured:false,summary:'No data',source:'OpenAI',metrics:[],updatedAt:''},
+  {id:'chatgpt',name:'ChatGPT (subscription)',status:'no_data',configured:false,summary:'No data',source:'ChatGPT',metrics:[],updatedAt:''},
+  {id:'anthropic',name:'Claude / Anthropic',status:'no_data',configured:false,summary:'No data',source:'Anthropic',metrics:[],updatedAt:''},
+  {id:'ollama-cloud',name:'Ollama Cloud',status:'no_data',configured:false,summary:'No data',source:'Ollama',metrics:[],updatedAt:''},
+  {id:'ollama-cloud-quota',name:'Ollama Cloud — limit',status:'no_data',configured:false,summary:'No data',source:'Ollama',metrics:[],updatedAt:''},
+  {id:'opencode-go',name:'OpenCode Go A',status:'no_data',configured:false,summary:'No data',source:'OpenCode',metrics:[],updatedAt:''},
+  {id:'opencode-go-b',name:'OpenCode Go B',status:'no_data',configured:false,summary:'No data',source:'OpenCode',metrics:[],updatedAt:''},
 ]
 
 function formatReset(value?:string) {
@@ -30,16 +30,16 @@ function formatRelative(value:string) {
   const diffMs = d.getTime() - Date.now()
   const future = diffMs >= 0
   const totalMin = Math.floor(Math.abs(diffMs) / 60000)
-  if (totalMin < 1) return future ? 'za chwilę' : 'przed chwilą'
+  if (totalMin < 1) return future ? 'in a moment' : 'a moment ago'
   const days = Math.floor(totalMin / 1440)
   const hours = Math.floor((totalMin % 1440) / 60)
   const mins = totalMin % 60
   const parts:string[] = []
-  if (days > 0) parts.push(`${days} ${days === 1 ? 'dzień' : 'dni'}`)
-  if (hours > 0) parts.push(`${hours} godz.`)
+  if (days > 0) parts.push(`${days} ${days === 1 ? 'day' : 'days'}`)
+  if (hours > 0) parts.push(`${hours} h`)
   if (mins > 0) parts.push(`${mins} min`)
   const body = parts.join(' ')
-  return future ? `za ${body}` : `${body} temu`
+  return future ? `in ${body}` : `${body} ago`
 }
 
 function ProviderCard({p}:{p:Provider}) {
@@ -47,7 +47,7 @@ function ProviderCard({p}:{p:Provider}) {
   return <article className={`card ${p.status}`}>
     <header className="cardHead">
       <div><div className="eyebrow">{p.source}</div><h2>{p.name}</h2></div>
-      <span className={`badge ${p.status}`}>{icon}{p.status === 'ok' ? 'Dane dostępne' : p.status === 'error' ? 'Błąd pobierania' : 'Brak danych'}</span>
+      <span className={`badge ${p.status}`}>{icon}{p.status === 'ok' ? 'Data available' : p.status === 'error' ? 'Fetch error' : 'No data'}</span>
     </header>
     <p className="summary">{p.summary}</p>
     {p.metrics.length > 0 ? <div className="metrics">{p.metrics.map((m,i)=><div className="metric" key={`${m.label}-${i}`}>
@@ -55,9 +55,9 @@ function ProviderCard({p}:{p:Provider}) {
       {typeof m.percent === 'number' && <div className="track" aria-label={`${m.label}: ${m.percent}%`}><div className="fill" style={{width:`${Math.min(100,Math.max(0,m.percent))}%`}}/></div>}
       {m.resetAt && <div className="reset">Reset: {formatReset(m.resetAt)}</div>}
       {m.rows && m.rows.length > 0 && <ul className="rows">{m.rows.map((row,j)=><li key={`${row.label}-${j}`}><span>{row.label}</span><strong>{row.value}</strong></li>)}</ul>}
-    </div>)}</div> : <div className="empty"><Activity size={20}/><span>Brak metryk do wyświetlenia.</span></div>}
+    </div>)}</div> : <div className="empty"><Activity size={20}/><span>No metrics to display.</span></div>}
     {p.message && <p className="message">{p.message}</p>}
-    <footer><span>{p.configured ? 'Backend skonfigurowany' : 'Brak konfiguracji ENV'}</span><span>Klucze nigdy nie trafiają do frontendu</span></footer>
+    <footer><span>{p.configured ? 'Backend configured' : 'ENV not configured'}</span><span>Keys never reach the frontend</span></footer>
   </article>
 }
 
@@ -68,18 +68,18 @@ export default function App(){
   const load = useCallback(async()=>{
     setLoading(true); setError('')
     try { const r=await fetch('/api/dashboard',{cache:'no-store'}); if(!r.ok) throw new Error(`HTTP ${r.status}`); setData(await r.json()) }
-    catch(e){ setError(e instanceof Error?e.message:'Nieznany błąd') }
+    catch(e){ setError(e instanceof Error?e.message:'Unknown error') }
     finally { setLoading(false) }
   },[])
   useEffect(()=>{void load()},[load])
   const providers=useMemo(()=>expected.map(f=>data?.providers.find(p=>p.id===f.id)??f),[data])
   return <main className="page">
     <section className="hero">
-      <div><div className="kicker"><ShieldCheck size={16}/> Read-only usage monitor</div><h1>AI Usage Dashboard</h1><p>Jeden widok dla OpenAI, Claude, OpenCode Go i Ollama Cloud. Backend odpytuje tylko endpointy usage/cost — nie wysyła promptów do modeli.</p></div>
-      <button onClick={()=>void load()} disabled={loading}><RefreshCw size={17} className={loading?'spin':''}/>{loading?'Odświeżanie…':'Odśwież'}</button>
+      <div><div className="kicker"><ShieldCheck size={16}/> Read-only usage monitor</div><h1>AI Usage Dashboard</h1><p>One view for OpenAI, Claude, OpenCode Go and Ollama Cloud. The backend only queries usage/cost endpoints — it never sends prompts to models.</p></div>
+      <button onClick={()=>void load()} disabled={loading}><RefreshCw size={17} className={loading?'spin':''}/>{loading?'Refreshing…':'Refresh'}</button>
     </section>
-    {error && <div className="globalError">Nie udało się odświeżyć dashboardu: {error}. Kafelki pozostają widoczne.</div>}
+    {error && <div className="globalError">Failed to refresh the dashboard: {error}. Tiles remain visible.</div>}
     <section className="grid">{providers.map(p=><ProviderCard p={p} key={p.id}/>)}</section>
-    <div className="meta">{data?.updatedAt ? `Ostatnie odświeżenie: ${new Date(data.updatedAt).toLocaleString('pl-PL')}` : 'Oczekiwanie na dane…'} · odświeżanie ręczne</div>
+    <div className="meta">{data?.updatedAt ? `Last refreshed: ${new Date(data.updatedAt).toLocaleString('en-GB')}` : 'Waiting for data…'} · manual refresh</div>
   </main>
 }

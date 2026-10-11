@@ -39,19 +39,19 @@ type chatGPTAuth struct {
 }
 
 func fetchChatGPT(client *http.Client) ProviderResult {
-	r := baseResult("chatgpt", "ChatGPT (subskrypcja)", "ChatGPT backend usage API (nieoficjalne)", false)
+	r := baseResult("chatgpt", "ChatGPT (subscription)", "ChatGPT backend usage API (unofficial)", false)
 	path := strings.TrimSpace(os.Getenv("CHATGPT_AUTH_FILE"))
 	if path == "" {
-		r.Message = "Ustaw CHATGPT_AUTH_FILE (ścieżka do auth.json z Codex CLI)."
+		r.Message = "Set CHATGPT_AUTH_FILE (path to auth.json from Codex CLI)."
 		return r
 	}
 	auth, err := readChatGPTAuth(path)
 	if err != nil {
-		r.Message = "Nie można odczytać pliku autoryzacji ChatGPT: " + err.Error()
+		r.Message = "Cannot read the ChatGPT auth file: " + err.Error()
 		return r
 	}
 	if auth.Tokens.AccessToken == "" {
-		r.Message = "Plik autoryzacji nie zawiera tokens.access_token."
+		r.Message = "The auth file does not contain tokens.access_token."
 		return r
 	}
 	r.Configured = true
@@ -66,12 +66,12 @@ func fetchChatGPT(client *http.Client) ProviderResult {
 	if status == http.StatusUnauthorized {
 		if auth.Tokens.RefreshToken == "" {
 			r.Status = "error"
-			r.Message = "Token wygasł, a plik nie zawiera tokens.refresh_token. Zaktualizuj CHATGPT_AUTH_FILE."
+			r.Message = "Token expired and the file has no tokens.refresh_token. Update CHATGPT_AUTH_FILE."
 			return r
 		}
 		if err := refreshChatGPT(client, path, &auth); err != nil {
 			r.Status = "error"
-			r.Message = "Token wygasł, odświeżenie nie powiodło się: " + safeProviderError(err)
+			r.Message = "Token expired and refresh failed: " + safeProviderError(err)
 			return r
 		}
 		body, status, err = chatGPTGet(client, usageURL, auth.Tokens.AccessToken, auth.Tokens.AccountID)
@@ -95,7 +95,7 @@ func fetchChatGPT(client *http.Client) ProviderResult {
 		} `json:"rate_limit"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		r.Message = "Endpoint odpowiedział, ale nie zwrócił poprawnego JSON."
+		r.Message = "The endpoint responded but did not return valid JSON."
 		return r
 	}
 
@@ -110,9 +110,9 @@ func fetchChatGPT(client *http.Client) ProviderResult {
 			case *w.LimitWindowSecs <= 21600: // <= 6 h
 				label = "5 h"
 			case *w.LimitWindowSecs <= 691200: // <= 8 days
-				label = "Tydzień"
+				label = "Week"
 			default:
-				label = "Miesiąc"
+				label = "Month"
 			}
 		}
 		reset := ""
@@ -124,16 +124,16 @@ func fetchChatGPT(client *http.Client) ProviderResult {
 		r.Metrics = append(r.Metrics, Metric{Label: label, Value: usedPercentLabel(p), Percent: &p, ResetAt: reset})
 	}
 	addWindow(payload.RateLimit.PrimaryWindow, "5 h")
-	addWindow(payload.RateLimit.SecondaryWindow, "Tydzień")
+	addWindow(payload.RateLimit.SecondaryWindow, "Week")
 	if payload.PlanType != "" {
 		r.Metrics = append(r.Metrics, Metric{Label: "Plan", Value: strings.ToUpper(payload.PlanType)})
 	}
 	if len(r.Metrics) == 0 {
-		r.Message = "Endpoint odpowiedział, ale nie zwrócił obsługiwanych okien limitów."
+		r.Message = "The endpoint responded but returned no supported limit windows."
 		return r
 	}
 	r.Status = "ok"
-	r.Summary = "Limity subskrypcji"
+	r.Summary = "Subscription limits"
 	return r
 }
 
@@ -214,7 +214,7 @@ func refreshChatGPT(client *http.Client, path string, auth *chatGPTAuth) error {
 		return err
 	}
 	if out.AccessToken == "" {
-		return fmt.Errorf("odpowiedź refresh nie zawiera access_token")
+		return fmt.Errorf("refresh response has no access_token")
 	}
 	auth.Tokens.AccessToken = out.AccessToken
 	if out.RefreshToken != "" {
@@ -258,8 +258,8 @@ func persistChatGPTAuth(path string, auth *chatGPTAuth) error {
 	if err != nil {
 		return err
 	}
-	// Zapis w miejscu: katalog /app jest root-owned, więc temp+rename nie przejdzie,
-	// a sam plik auth.json należy do użytkownika aplikacji.
+	// Write in place: the /app directory is root-owned, so temp+rename will not work,
+	// while auth.json itself belongs to the app user.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o600)
 	if err != nil {
 		return err

@@ -11,7 +11,7 @@ func mustRaw(t *testing.T, s string) map[string]any {
 	t.Helper()
 	var m map[string]any
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
-		t.Fatalf("nieprawidłowy JSON testowy: %v", err)
+		t.Fatalf("invalid test JSON: %v", err)
 	}
 	return m
 }
@@ -50,24 +50,24 @@ func TestOllamaUsageShape(t *testing.T) {
 		t.Fatal("oczekiwano rozpoznania formatu totals/buckets")
 	}
 	if appendOllamaQuotaMetrics(&r, raw) {
-		t.Fatal("format cloud-usage nie powinien być liczony jako stary format limits")
+		t.Fatal("the cloud-usage format should not be counted as the old limits format")
 	}
 
-	if m := metricByLabel(r, "Żądania (7 dni)"); m == nil || m.Value != "15" {
-		t.Fatalf("Żądania (7 dni) = %+v", m)
+	if m := metricByLabel(r, "Requests (7 days)"); m == nil || m.Value != "15" {
+		t.Fatalf("Requests (7 days) = %+v", m)
 	}
-	if m := metricByLabel(r, "Koszt (7 dni)"); m == nil || m.Value != "0.02 USD" {
-		t.Fatalf("Koszt (7 dni) = %+v", m)
+	if m := metricByLabel(r, "Cost (7 days)"); m == nil || m.Value != "0.02 USD" {
+		t.Fatalf("Cost (7 days) = %+v", m)
 	}
-	if m := metricByLabel(r, "Tokeny (7 dni)"); m == nil || m.Value != "119600" {
-		t.Fatalf("Tokeny (7 dni) = %+v", m)
+	if m := metricByLabel(r, "Tokens (7 days)"); m == nil || m.Value != "119600" {
+		t.Fatalf("Tokens (7 days) = %+v", m)
 	}
-	if m := metricByLabel(r, "Żądania wg dnia (7 dni)"); m == nil || m.Value != "12" || len(m.Rows) != 2 {
-		t.Fatalf("Żądania wg dnia (7 dni) = %+v", m)
+	if m := metricByLabel(r, "Requests by day (7 days)"); m == nil || m.Value != "12" || len(m.Rows) != 2 {
+		t.Fatalf("Requests by day (7 days) = %+v", m)
 	}
 }
 
-// Opcjonalny własny limit USD dokłada pasek procentowy.
+// An optional custom USD limit adds a percentage bar.
 func TestOllamaUsageShapeWithBudget(t *testing.T) {
 	t.Setenv("OLLAMA_MONTHLY_LIMIT_USD", "100")
 	raw := mustRaw(t, `{"range":"30d","totals":{"request_count":3,"usage_usd":25}}`)
@@ -76,13 +76,13 @@ func TestOllamaUsageShapeWithBudget(t *testing.T) {
 	if !appendOllamaUsageMetrics(&r, raw) {
 		t.Fatal("oczekiwano rozpoznania formatu")
 	}
-	m := metricByLabel(r, "Własny limit miesięczny")
+	m := metricByLabel(r, "Custom monthly limit")
 	if m == nil || m.Percent == nil || *m.Percent != 25 {
-		t.Fatalf("Własny limit miesięczny = %+v", m)
+		t.Fatalf("Custom monthly limit = %+v", m)
 	}
 }
 
-// Starszy format: limits.session + limits.weekly jako ułamki 0..1.
+// Older format: limits.session + limits.weekly as 0..1 fractions.
 func TestOllamaLegacySessionWeekly(t *testing.T) {
 	raw := mustRaw(t, `{
 	  "activity": {"cost": "0.00000", "models": [], "period": {"type": "last_4_weeks"}},
@@ -94,16 +94,16 @@ func TestOllamaLegacySessionWeekly(t *testing.T) {
 
 	var r ProviderResult
 	if appendOllamaUsageMetrics(&r, raw) {
-		t.Fatal("starszy format nie ma totals, nie powinien być liczony jako cloud-usage")
+		t.Fatal("the older format has no totals and should not be counted as cloud-usage")
 	}
 	if !appendOllamaQuotaMetrics(&r, raw) {
 		t.Fatal("oczekiwano rozpoznania formatu limits")
 	}
-	if m := metricByLabel(r, "5 h / sesja"); m == nil || m.Value != "4.6% użyte" {
-		t.Fatalf("5 h / sesja = %+v", m)
+	if m := metricByLabel(r, "5 h / session"); m == nil || m.Value != "4.6% used" {
+		t.Fatalf("5 h / session = %+v", m)
 	}
-	if m := metricByLabel(r, "Tydzień"); m == nil || m.Value != "5.1% użyte" {
-		t.Fatalf("Tydzień = %+v", m)
+	if m := metricByLabel(r, "Week"); m == nil || m.Value != "5.1% used" {
+		t.Fatalf("Week = %+v", m)
 	}
 }
 
@@ -127,26 +127,26 @@ func TestOllamaLegacyMonthly(t *testing.T) {
 	if !appendOllamaQuotaMetrics(&r, raw) {
 		t.Fatal("oczekiwano rozpoznania formatu monthly")
 	}
-	if m := metricByLabel(r, "Miesiąc"); m == nil || m.Value != "23.1% użyte" || m.ResetAt == "" {
-		t.Fatalf("Miesiąc = %+v", m)
+	if m := metricByLabel(r, "Month"); m == nil || m.Value != "23.1% used" || m.ResetAt == "" {
+		t.Fatalf("Month = %+v", m)
 	}
-	if m := metricByLabel(r, "Żądania wg modelu (miesiąc)"); m == nil || m.Value != "1321" || len(m.Rows) != 2 {
-		t.Fatalf("Żądania wg modelu = %+v", m)
+	if m := metricByLabel(r, "Requests by model (month)"); m == nil || m.Value != "1321" || len(m.Rows) != 2 {
+		t.Fatalf("Requests by model = %+v", m)
 	}
-	if m := metricByLabel(r, "Koszt (4 tyg.)"); m == nil || m.Value != "31.22 USD" {
-		t.Fatalf("Koszt (4 tyg.) = %+v", m)
+	if m := metricByLabel(r, "Cost (4 wk)"); m == nil || m.Value != "31.22 USD" {
+		t.Fatalf("Cost (4 wk) = %+v", m)
 	}
 }
 
-// Nierozpoznany format nie generuje metryk (kafelek pokaże komunikat).
+// An unrecognised format generates no metrics (the tile shows a message).
 func TestOllamaUnknownShape(t *testing.T) {
 	raw := mustRaw(t, `{"hello":"world"}`)
 	var r ProviderResult
 	if appendOllamaUsageMetrics(&r, raw) || appendOllamaQuotaMetrics(&r, raw) {
-		t.Fatal("nieznany format nie powinien generować metryk")
+		t.Fatal("an unknown format should not generate metrics")
 	}
 	if len(r.Metrics) != 0 {
-		t.Fatalf("oczekiwano 0 metryk, jest %d", len(r.Metrics))
+		t.Fatalf("expected 0 metrics, got %d", len(r.Metrics))
 	}
 }
 
@@ -159,12 +159,12 @@ func TestWithOllamaRange(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := withOllamaRange(c.in, c.rng); got != c.want {
-			t.Errorf("withOllamaRange(%q, %q) = %q, chcę %q", c.in, c.rng, got, c.want)
+			t.Errorf("withOllamaRange(%q, %q) = %q, want %q", c.in, c.rng, got, c.want)
 		}
 	}
 }
 
-// Nowy kafelek limitu: GET /api/balance (allowance + data resetu).
+// New quota tile: GET /api/balance (allowance + reset date).
 func TestOllamaBalance(t *testing.T) {
 	raw := mustRaw(t, `{
 	  "included": {"balance_usd": 0, "allowance_usd": 60,
@@ -176,16 +176,16 @@ func TestOllamaBalance(t *testing.T) {
 	if !appendOllamaBalanceMetrics(&r, raw) {
 		t.Fatal("oczekiwano rozpoznania formatu balance")
 	}
-	m := metricByLabel(r, "Limit miesięczny")
+	m := metricByLabel(r, "Monthly limit")
 	if m == nil || m.Value != "60.00 / 60.00 USD" || m.Percent == nil || *m.Percent != 100 || m.ResetAt != "2026-01-01T00:00:00Z" {
-		t.Fatalf("Limit miesięczny = %+v", m)
+		t.Fatalf("Monthly limit = %+v", m)
 	}
-	if p := metricByLabel(r, "Dokupione środki"); p != nil {
-		t.Fatalf("Dokupione środki nie powinny się pojawić gdy 0: %+v", p)
+	if p := metricByLabel(r, "Purchased credits"); p != nil {
+		t.Fatalf("Purchased credits should not appear when 0: %+v", p)
 	}
 }
 
-// Kafelek Claude: bez cache błąd jest zwykły, z cache pokazuje ostatnie dane.
+// Claude tile: without cache the error is plain, with cache it shows the last data.
 func TestClaudeFailWithoutCache(t *testing.T) {
 	claudeCacheMu.Lock()
 	claudeCache = nil
@@ -195,23 +195,23 @@ func TestClaudeFailWithoutCache(t *testing.T) {
 	r := baseResult("anthropic", "Claude / Anthropic", "x", true)
 	got := claudeFail(r, "error", "HTTP 429")
 	if got.Status != "error" || got.Message != "HTTP 429" || len(got.Metrics) != 0 {
-		t.Fatalf("bez cache: %+v", got)
+		t.Fatalf("without cache: %+v", got)
 	}
 }
 
 func TestClaudeFailWithCache(t *testing.T) {
 	p := 42.0
-	claudeSetCachedMetrics([]Metric{{Label: "5 h", Value: "42% użyte", Percent: &p}})
+	claudeSetCachedMetrics([]Metric{{Label: "5 h", Value: "42% used", Percent: &p}})
 
 	r := baseResult("anthropic", "Claude / Anthropic", "x", true)
 	got := claudeFail(r, "error", "HTTP 429")
 	if got.Status != "error" || len(got.Metrics) != 1 || got.Metrics[0].Label != "5 h" {
-		t.Fatalf("z cache: %+v", got)
+		t.Fatalf("with cache: %+v", got)
 	}
-	if !strings.Contains(got.Message, "Ostatnie udane pobranie") || !strings.Contains(got.Message, "HTTP 429") {
+	if !strings.Contains(got.Message, "Last successful fetch") || !strings.Contains(got.Message, "HTTP 429") {
 		t.Fatalf("message: %q", got.Message)
 	}
-	if !strings.Contains(got.Summary, "nieaktualne") {
+	if !strings.Contains(got.Summary, "stale data") {
 		t.Fatalf("summary: %q", got.Summary)
 	}
 }
@@ -227,11 +227,11 @@ func TestOllamaBalancePartial(t *testing.T) {
 	if !appendOllamaBalanceMetrics(&r, raw) {
 		t.Fatal("oczekiwano rozpoznania formatu balance")
 	}
-	m := metricByLabel(r, "Limit miesięczny")
+	m := metricByLabel(r, "Monthly limit")
 	if m == nil || m.Value != "45.00 / 60.00 USD" || m.Percent == nil || *m.Percent != 75 {
-		t.Fatalf("Limit miesięczny = %+v", m)
+		t.Fatalf("Monthly limit = %+v", m)
 	}
-	if p := metricByLabel(r, "Dokupione środki"); p == nil || p.Value != "5.00 USD" {
-		t.Fatalf("Dokupione środki = %+v", p)
+	if p := metricByLabel(r, "Purchased credits"); p == nil || p.Value != "5.00 USD" {
+		t.Fatalf("Purchased credits = %+v", p)
 	}
 }
