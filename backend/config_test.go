@@ -19,7 +19,7 @@ func TestLoadTilesOrderDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("expected 3 tiles (invalid id and prefix duplicate skipped), got %+v", tiles)
 	}
 	want := []struct{ id, typ, name string }{
-		{"claude", "claude", "Claude / Anthropic"},
+		{"claude", "claude", "Claude (subscription)"},
 		{"opencode-a", "opencode-go", "OpenCode Go A"},
 		{"typo", "cladue", "typo"},
 	}

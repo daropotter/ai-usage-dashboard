@@ -1,7 +1,8 @@
 # AI Usage Dashboard — Go + React
 
 Read-only dashboard of usage and limits for **OpenAI**, **ChatGPT (subscription)**,
-**Claude / Anthropic**, **OpenCode Go** and **Ollama Cloud**.
+**Claude / Anthropic** (Pro/Max subscription and API usage), **OpenCode Go** and
+**Ollama Cloud**.
 
 ## Tiles
 
@@ -15,19 +16,19 @@ TILE_CLAUDE_TYPE=claude
 TILE_CLAUDE_AUTH_FILE=/secrets/claude-credentials.json
 
 TILE_OPENCODE_A_TYPE=opencode-go
-TILE_OPENCODE_A_NAME=OpenCode Go A
+TILE_OPENCODE_A_NAME=OpenCode Go — account A
 TILE_OPENCODE_A_API_KEY=...
 
 TILE_OPENCODE_B_TYPE=opencode-go
-TILE_OPENCODE_B_NAME=OpenCode Go B
+TILE_OPENCODE_B_NAME=OpenCode Go — account B
 TILE_OPENCODE_B_API_KEY=...
 ```
 
 Each tile reads `TILE_<ID>_*`, where `<ID>` is the tile id upper-cased with
 `-` → `_`. `TYPE` is required. `NAME` is optional (each type has a default).
 The tile id is also its `id` in the API. Several tiles can use the same type,
-for example two accounts of one provider. `.env.example` sets up all
-7 tiles from the previous fixed layout.
+for example two accounts of one provider. `.env.example` sets up one tile
+of every type.
 
 ### Tile types
 
@@ -36,11 +37,12 @@ for example two accounts of one provider. `.env.example` sets up all
 | `openai-costs` | OpenAI Organization Costs API (`GET /v1/organization/costs`): organization cost this month. **Not** a ChatGPT subscription meter. Needs an organization admin key. | `API_KEY`, `MONTHLY_LIMIT_USD`? (local budget bar), `URL`? |
 | `chatgpt` | 5 h / weekly subscription limits from the unofficial ChatGPT backend (`chatgpt.com/backend-api/wham/usage`), the same one Codex CLI uses. | `AUTH_FILE` (Codex CLI `auth.json`), `URL`?, `TOKEN_URL`? |
 | `claude` | Pro/Max limits: 5 h / weekly and weekly per model, from the unofficial `api.anthropic.com/api/oauth/usage` (same as `/usage` in Claude Code). | `AUTH_FILE` (Claude Code `.credentials.json`), `URL`?, `TOKEN_URL`? |
+| `anthropic-api` | Anthropic API (pay-as-you-go) usage this month from the Usage & Cost Admin API: tokens from `GET /v1/organizations/usage_report/messages` (input, cache read, cache write, output) and cost from `GET /v1/organizations/cost_report`. **Not** the Pro/Max quota (that is `claude`). Needs an organization Admin API key (`sk-ant-admin...`). | `API_KEY`, `MONTHLY_LIMIT_USD`? (local budget bar), `USAGE_URL`?, `COST_URL`? |
 | `ollama-usage` | `GET https://ollama.com/api/usage`: `totals` (requests, USD, tokens) and `buckets`. The older `limits.session\|weekly\|monthly` format is still recognised. | `API_KEY`, `RANGE`? (`24h`\|`7d`\|`30d`), `MONTHLY_LIMIT_USD`?, `RESET_ANCHOR`? (older format only), `URL`? |
 | `ollama-balance` | `GET https://ollama.com/api/balance`: monthly allowance, remaining credits, purchased credits and the **reset date** (`period.until`). The bar shows `(allowance - balance)/allowance`. | `API_KEY`, `URL`? |
 | `opencode-go` | 5 h / weekly / monthly quota from `GET https://opencode.ai/zen/go/v1/usage`. | `API_KEY`, `URL`? |
 
-`?` = optional. `URL` / `TOKEN_URL` override the endpoints (for tests or a proxy).
+`?` = optional. `URL` / `TOKEN_URL` / `USAGE_URL` / `COST_URL` override the endpoints (for tests or a proxy).
 
 A tile with a missing key shows `No data`, and its message names the exact
 variable to set. A tile with an unknown `TYPE` shows `Fetch error`. If `TILES`
@@ -107,8 +109,8 @@ Example shape (`id` is the tile id from `TILES`; metrics may have optional `rese
 {
   "providers": [
     {
-      "id": "opencode-a",
-      "name": "OpenCode Go A",
+      "id": "opencode",
+      "name": "OpenCode Go",
       "status": "ok",
       "configured": true,
       "summary": "Subscription limits",
@@ -135,7 +137,7 @@ Example shape (`id` is the tile id from `TILES`; metrics may have optional `rese
       ]
     },
     {
-      "id": "ollama-limit",
+      "id": "ollama-balance",
       "name": "Ollama Cloud — limit",
       "status": "ok",
       "configured": true,

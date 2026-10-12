@@ -12,7 +12,7 @@ import (
 
 // Tiles are configured entirely from ENV:
 //
-//	TILES=claude,opencode-a          # order = order on the dashboard
+//	TILES=claude,opencode-a                # order = order on the dashboard
 //	TILE_CLAUDE_TYPE=claude                # provider type (see tileTypes)
 //	TILE_CLAUDE_NAME=Claude / Anthropic    # optional, defaults per type
 //	TILE_CLAUDE_AUTH_FILE=/secrets/claude.json
@@ -40,7 +40,8 @@ type tileType struct {
 var tileTypes = map[string]tileType{
 	"openai-costs":   {"OpenAI", fetchOpenAI},
 	"chatgpt":        {"ChatGPT (subscription)", fetchChatGPT},
-	"claude":         {"Claude / Anthropic", fetchAnthropic},
+	"claude":         {"Claude (subscription)", fetchAnthropic},
+	"anthropic-api":  {"Anthropic API", fetchAnthropicAPI},
 	"ollama-usage":   {"Ollama Cloud", fetchOllama},
 	"ollama-balance": {"Ollama Cloud — limit", fetchOllamaQuota},
 	"opencode-go":    {"OpenCode Go", fetchOpenCodeQuota},
