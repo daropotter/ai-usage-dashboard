@@ -6,6 +6,10 @@ Read-only dashboard of usage and limits for **OpenAI**, **ChatGPT (subscription)
 **Claude / Anthropic** (Pro/Max subscription and API usage), **OpenCode Go** and
 **Ollama Cloud**.
 
+![AI Usage Dashboard](docs/dashboard.png)
+
+*Screenshot with sample data.*
+
 ## Requirements
 
 - Go 1.23+ (backend)
