@@ -1,5 +1,7 @@
 # AI Usage Dashboard — Go + React
 
+[![CI](https://github.com/daropotter/ai-usage-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/daropotter/ai-usage-dashboard/actions/workflows/ci.yml)
+
 Read-only dashboard of usage and limits for **OpenAI**, **ChatGPT (subscription)**,
 **Claude / Anthropic** (Pro/Max subscription and API usage), **OpenCode Go** and
 **Ollama Cloud**.
