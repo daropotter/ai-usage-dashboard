@@ -4,24 +4,25 @@ Read-only dashboard of usage and limits for **OpenAI**, **ChatGPT (subscription)
 **Claude / Anthropic** (Pro/Max subscription and API usage), **OpenCode Go** and
 **Ollama Cloud**.
 
+## Requirements
+
+- Go 1.23+ (backend)
+- Node 22+ and npm (frontend build)
+- Docker with Compose (optional, for the container image)
+
 ## Tiles
 
 Tiles are **configured on the backend through ENV**. The frontend has no list of
 providers: it renders whatever `/api/dashboard` returns, in that order.
 
 ```env
-TILES=claude,opencode-a,opencode-b   # ids, in display order
+TILES=claude,opencode   # ids, in display order
 
 TILE_CLAUDE_TYPE=claude
 TILE_CLAUDE_AUTH_FILE=/secrets/claude-credentials.json
 
-TILE_OPENCODE_A_TYPE=opencode-go
-TILE_OPENCODE_A_NAME=OpenCode Go — account A
-TILE_OPENCODE_A_API_KEY=...
-
-TILE_OPENCODE_B_TYPE=opencode-go
-TILE_OPENCODE_B_NAME=OpenCode Go — account B
-TILE_OPENCODE_B_API_KEY=...
+TILE_OPENCODE_TYPE=opencode-go
+TILE_OPENCODE_API_KEY=...
 ```
 
 Each tile reads `TILE_<ID>_*`, where `<ID>` is the tile id upper-cased with
@@ -43,6 +44,10 @@ of every type.
 | `opencode-go` | 5 h / weekly / monthly quota from `GET https://opencode.ai/zen/go/v1/usage`. | `API_KEY`, `URL`? |
 
 `?` = optional. `URL` / `TOKEN_URL` / `USAGE_URL` / `COST_URL` override the endpoints (for tests or a proxy).
+
+**Unofficial endpoints:** the `chatgpt` and `claude` tiles use undocumented
+consumer endpoints. They may change without notice or rate-limit requests; the
+tile then shows `No data` / `Fetch error` with the upstream message.
 
 A tile with a missing key shows `No data`, and its message names the exact
 variable to set. A tile with an unknown `TYPE` shows `Fetch error`. If `TILES`
@@ -75,7 +80,17 @@ docker compose up --build
 Dashboard: `http://localhost:8080`
 
 The ChatGPT and Claude tiles additionally require mounting the credentials files
-(`TILE_<ID>_AUTH_FILE`) — see Tiles.
+(`TILE_<ID>_AUTH_FILE`) — see Tiles. For example, add to `docker-compose.yml`:
+
+```yaml
+services:
+  dashboard:
+    volumes:
+      - ./auth.json:/secrets/chatgpt-auth.json
+      - ./claude-credentials.json:/secrets/claude-credentials.json
+```
+
+The files must be writable: the backend writes rotated tokens back to them.
 
 ## Development
 
@@ -101,6 +116,8 @@ The Vite proxy forwards `/api/*` to `localhost:8080`.
 
 ## Dashboard API
 
+`GET /api/health` returns `{"ok": true}`.
+
 `GET /api/dashboard`
 
 Example shape (`id` is the tile id from `TILES`; metrics may have optional `resetAt` and `rows`):
@@ -116,7 +133,7 @@ Example shape (`id` is the tile id from `TILES`; metrics may have optional `rese
       "summary": "Subscription limits",
       "source": "OpenCode Go quota API",
       "metrics": [
-        {"label":"5 h","value":"12.0% used","percent":12,"resetAt":"2026-09-28T15:00:00Z"}
+        {"label":"5 h","value":"12% used","percent":12,"resetAt":"2026-09-28T15:00:00Z"}
       ]
     },
     {
@@ -162,3 +179,7 @@ Example shape (`id` is the tile id from `TILES`; metrics may have optional `rese
 | `TILE_<ID>_*` | per-tile settings (see Tiles) |
 
 See `.env.example`. Never commit `.env` or credentials files to the repo.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
