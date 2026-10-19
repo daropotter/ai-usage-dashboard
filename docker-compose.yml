@@ -1,7 +1,5 @@
-# Local/dev compose project. Deliberately a DIFFERENT name than the production
-# stack (`name: ai-usage-dashboard` in prod-stack/ai-usage-dashboard), so that
-# `docker compose up/down` from this directory does not touch the production
-# container `ai-usage-dashboard-prod`.
+# Local/dev compose project. Uses its own project name so that
+# `docker compose up/down` from this directory cannot touch another stack.
 name: ai-usage-dashboard-dev
 
 services:
