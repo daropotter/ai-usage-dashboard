@@ -35,6 +35,68 @@ const (
 	claudeInvalidCooldown   = time.Hour
 )
 
+// The usage endpoint is rate-limited per token: a successful result is reused
+// for claudeUsageFreshFor (TILE_<ID>_CACHE_SECONDS overrides), and after a 429
+// the endpoint is left alone for Retry-After or an exponential backoff.
+const (
+	claudeUsageFreshFor     = 5 * time.Minute
+	claudeUsageBackoffStart = 5 * time.Minute
+	claudeUsageBackoffMax   = time.Hour
+)
+
+// claudeUsageState is kept per credentials file; mu also makes usage calls
+// single-flight, so parallel dashboard requests cause one upstream call.
+type claudeUsageState struct {
+	mu      sync.Mutex
+	nextTry time.Time
+	backoff time.Duration
+}
+
+var (
+	claudeUsageStatesMu sync.Mutex
+	claudeUsageStates   = map[string]*claudeUsageState{}
+)
+
+func claudeUsageStateFor(path string) *claudeUsageState {
+	claudeUsageStatesMu.Lock()
+	defer claudeUsageStatesMu.Unlock()
+	st, ok := claudeUsageStates[path]
+	if !ok {
+		st = &claudeUsageState{}
+		claudeUsageStates[path] = st
+	}
+	return st
+}
+
+// rateLimited records a 429 and returns when the next call is allowed.
+func (st *claudeUsageState) rateLimited(retryAfter time.Duration) time.Time {
+	st.backoff *= 2
+	if st.backoff < claudeUsageBackoffStart {
+		st.backoff = claudeUsageBackoffStart
+	}
+	if st.backoff > claudeUsageBackoffMax {
+		st.backoff = claudeUsageBackoffMax
+	}
+	wait := st.backoff
+	if retryAfter > wait {
+		wait = retryAfter
+	}
+	st.nextTry = time.Now().Add(wait)
+	return st.nextTry
+}
+
+// claudeFresh returns the tile's cached metrics as a normal result while they are fresh.
+func claudeFresh(r ProviderResult, freshFor time.Duration) (ProviderResult, bool) {
+	metrics, at, ok := claudeCachedMetrics(r.ID)
+	if !ok || time.Since(at) >= freshFor {
+		return r, false
+	}
+	r.Status = "ok"
+	r.Summary = "Subscription limits"
+	r.Metrics = metrics
+	return r, true
+}
+
 // claudeRefreshState is kept per credentials file: the cooldown belongs to the
 // refresh token, not to the tile.
 type claudeRefreshState struct {
@@ -134,11 +196,28 @@ func fetchAnthropic(client *http.Client, t TileConfig) ProviderResult {
 	r.Configured = true
 
 	usageURL := t.GetOr("URL", defaultClaudeUsageURL)
+	freshFor := claudeUsageFreshFor
+	if v, ok := t.Float("CACHE_SECONDS"); ok && v >= 0 {
+		freshFor = time.Duration(v * float64(time.Second))
+	}
+	if res, ok := claudeFresh(r, freshFor); ok {
+		return res
+	}
+	st := claudeUsageStateFor(path)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	// A parallel request may have fetched while this one waited for the lock.
+	if res, ok := claudeFresh(r, freshFor); ok {
+		return res
+	}
+	if time.Now().Before(st.nextTry) {
+		return claudeFail(r, "error", "Anthropic is rate-limiting the usage endpoint (HTTP 429); next try at "+st.nextTry.UTC().Format("15:04:05Z")+".")
+	}
 
 	// Refresh only on 401 — no proactive refresh. The Anthropic token endpoint
 	// is heavily rate-limited (429), so we do not hammer it on
 	// every dashboard visit while the current token still works.
-	body, status, err := claudeGet(client, usageURL, creds.ClaudeAiOauth.AccessToken)
+	body, status, retryAfter, err := claudeGet(client, usageURL, creds.ClaudeAiOauth.AccessToken)
 	if err != nil {
 		return claudeFail(r, "error", safeProviderError(err))
 	}
@@ -150,17 +229,20 @@ func fetchAnthropic(client *http.Client, t TileConfig) ProviderResult {
 		if err := claudeTryRefresh(client, t.GetOr("TOKEN_URL", defaultClaudeTokenURL), path, &creds); err != nil {
 			return claudeFail(r, "error", "Token expired and refresh failed: "+safeProviderError(err))
 		}
-		body, status, err = claudeGet(client, usageURL, creds.ClaudeAiOauth.AccessToken)
+		body, status, retryAfter, err = claudeGet(client, usageURL, creds.ClaudeAiOauth.AccessToken)
 		if err != nil {
 			return claudeFail(r, "error", safeProviderError(err))
 		}
 	}
 	if status == http.StatusTooManyRequests {
-		return claudeFail(r, "error", "Anthropic is rate-limiting the usage endpoint (HTTP 429). Try again later.")
+		next := st.rateLimited(retryAfter)
+		return claudeFail(r, "error", "Anthropic is rate-limiting the usage endpoint (HTTP 429); next try at "+next.UTC().Format("15:04:05Z")+".")
 	}
 	if status < 200 || status >= 300 {
 		return claudeFail(r, "error", fmt.Sprintf("HTTP %d: %s", status, compactError(body)))
 	}
+	st.backoff = 0
+	st.nextTry = time.Time{}
 
 	var payload struct {
 		FiveHour       *claudeWindow `json:"five_hour"`
@@ -272,10 +354,11 @@ func claudeTryRefresh(client *http.Client, tokenURL, path string, creds *claudeC
 }
 
 // claudeGet does not abort on non-2xx so it can tell an expired token (401) from the rest.
-func claudeGet(client *http.Client, endpoint, token string) ([]byte, int, error) {
+// It also returns Retry-After (zero when absent) for the 429 backoff.
+func claudeGet(client *http.Client, endpoint, token string) ([]byte, int, time.Duration, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
@@ -285,14 +368,15 @@ func claudeGet(client *http.Client, endpoint, token string) ([]byte, int, error)
 	req.Header.Set("User-Agent", claudeUserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	defer resp.Body.Close()
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return nil, resp.StatusCode, retryAfter, err
 	}
-	return body, resp.StatusCode, nil
+	return body, resp.StatusCode, retryAfter, nil
 }
 
 func readClaudeCreds(path string) (claudeCreds, error) {
