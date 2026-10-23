@@ -36,7 +36,7 @@ func TestAnthropicAPIUsageAndCost(t *testing.T) {
 	if r.Status != "ok" || r.Message != "" {
 		t.Fatalf("result: %+v", r)
 	}
-	if m := metricByLabel(r, "Tokens this month"); m == nil || m.Value != "1865" || len(m.Rows) != 4 || m.Rows[2].Value != "150" {
+	if m := metricByLabel(r, "Tokens this month"); m == nil || m.Value != "1,865" || len(m.Rows) != 4 || m.Rows[2].Value != "150" {
 		t.Fatalf("Tokens this month = %+v", m)
 	}
 	if m := metricByLabel(r, "Cost this month"); m == nil || m.Value != "13.35 USD" {

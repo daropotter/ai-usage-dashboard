@@ -232,6 +232,143 @@ func ollamaBucketRows(raw map[string]any) ([]MetricRow, float64) {
 	return rows, sum
 }
 
+// ollamaModelRows returns the per-model groups from
+// GET /api/usage?group_by=model as rows, most used first. The API ranks groups
+// by cost (or requests for legacy plans); the list under the monthly limit is
+// explicitly by request count. Each row shows requests and, when available,
+// cost or total tokens.
+func ollamaModelRows(raw map[string]any) []MetricRow {
+	totals, ok := raw["totals"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	arr, ok := totals["groups"].([]any)
+	if !ok {
+		return nil
+	}
+	type modelUse struct {
+		name        string
+		requests    float64
+		hasRequests bool
+		cost        float64
+		hasCost     bool
+		tokens      float64
+		hasTokens   bool
+	}
+	list := make([]modelUse, 0, len(arr))
+	for _, it := range arr {
+		g, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := findString(g, []string{"model", "name"})
+		if name == "" {
+			name = "model"
+		}
+		m := modelUse{name: name}
+		m.requests, m.hasRequests = findNumber(g, []string{"request_count", "requests", "count"})
+		m.cost, m.hasCost = findNumber(g, []string{"usage_usd", "cost_usd", "cost"})
+		in, inOK := findNumber(g, []string{"input_tokens"})
+		out, outOK := findNumber(g, []string{"output_tokens"})
+		m.tokens, m.hasTokens = in+out, inOK || outOK
+		if !m.hasRequests && !m.hasCost && !m.hasTokens {
+			continue
+		}
+		list = append(list, m)
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].requests != list[j].requests {
+			return list[i].requests > list[j].requests
+		}
+		if list[i].cost != list[j].cost {
+			return list[i].cost > list[j].cost
+		}
+		return list[i].name < list[j].name
+	})
+
+	rows := make([]MetricRow, 0, len(list))
+	for _, m := range list {
+		parts := make([]string, 0, 2)
+		if m.hasRequests {
+			parts = append(parts, formatCount(m.requests)+" req")
+		}
+		if m.hasCost && m.cost > 0 {
+			parts = append(parts, formatUSD4(m.cost))
+		} else if m.hasTokens && m.tokens > 0 {
+			parts = append(parts, formatCount(m.tokens)+" tok")
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		rows = append(rows, MetricRow{Label: m.name, Value: strings.Join(parts, " · ")})
+	}
+	return rows
+}
+
+// withOllamaGroupBy adds group_by=model unless the endpoint already has it.
+func withOllamaGroupBy(endpoint, group string) string {
+	if group == "" || strings.Contains(endpoint, "group_by=") {
+		return endpoint
+	}
+	sep := "?"
+	if strings.Contains(endpoint, "?") {
+		sep = "&"
+	}
+	return endpoint + sep + "group_by=" + url.QueryEscape(group)
+}
+
+// appendOllamaRecentModels adds a list of the most used models from
+// GET /api/usage?group_by=model directly below the monthly limit. Failures are
+// non-fatal: the balance tile still shows the limit without the breakdown.
+func appendOllamaRecentModels(client *http.Client, r *ProviderResult, t TileConfig) {
+	endpoint := t.GetOr("USAGE_URL", "https://ollama.com/api/usage")
+	rng := t.GetOr("RANGE", "7d")
+	switch rng {
+	case "24h", "7d", "30d":
+	default:
+		rng = "7d"
+	}
+	endpoint = withOllamaRange(endpoint, rng)
+	endpoint = withOllamaGroupBy(endpoint, "model")
+
+	var raw map[string]any
+	if err := doJSON(client, http.MethodGet, endpoint, map[string]string{"Authorization": "Bearer " + t.Get("API_KEY")}, &raw); err != nil {
+		r.Message = "Model breakdown unavailable: " + safeProviderError(err)
+		return
+	}
+	rows := ollamaModelRows(raw)
+	if len(rows) == 0 {
+		return
+	}
+	total := 0.0
+	if totals, ok := raw["totals"].(map[string]any); ok {
+		total, _ = findNumber(totals, []string{"request_count"})
+	}
+	metric := Metric{Label: "Top models (" + ollamaRangeLabel(raw) + ")", Value: formatCount(total), Rows: rows}
+
+	// Keep the breakdown right under the monthly limit (or included credits).
+	idx := -1
+	for i := range r.Metrics {
+		if r.Metrics[i].Label == "Monthly limit" {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		for i := range r.Metrics {
+			if r.Metrics[i].Label == "Included credits" {
+				idx = i
+			}
+		}
+	}
+	if idx < 0 {
+		r.Metrics = append(r.Metrics, metric)
+		return
+	}
+	r.Metrics = append(r.Metrics, Metric{})
+	copy(r.Metrics[idx+2:], r.Metrics[idx+1:])
+	r.Metrics[idx+1] = metric
+}
+
 // appendOllamaQuotaMetrics handles the older, undocumented format
 // (/api/usage with limits.session|weekly|monthly.usage as a 0..1 fraction and
 // activity.cost). Ollama switches the response shape, so we keep both.
@@ -296,9 +433,9 @@ func appendOllamaQuotaMetrics(r *ProviderResult, raw map[string]any, resetAnchor
 				sort.Slice(list, func(i, j int) bool { return list[i].n > list[j].n })
 				rows := make([]MetricRow, 0, len(list))
 				for _, x := range list {
-					rows = append(rows, MetricRow{Label: x.name, Value: fmt.Sprintf("%d", x.n)})
+					rows = append(rows, MetricRow{Label: x.name, Value: formatCount(float64(x.n))})
 				}
-				r.Metrics = append(r.Metrics, Metric{Label: "Requests by model (month)", Value: fmt.Sprintf("%d", total), Rows: rows})
+				r.Metrics = append(r.Metrics, Metric{Label: "Requests by model (month)", Value: formatCount(float64(total)), Rows: rows})
 				added = true
 			}
 		}
@@ -312,9 +449,37 @@ func appendOllamaQuotaMetrics(r *ProviderResult, raw map[string]any, resetAnchor
 	return added
 }
 
-// formatCount formats an integer (requests, tokens) without separators.
+// formatCount formats an integer (requests, tokens) with "," thousands
+// separators: 119600 -> "119,600".
 func formatCount(v float64) string {
-	return strconv.FormatInt(int64(math.Round(v)), 10)
+	s := strconv.FormatInt(int64(math.Round(v)), 10)
+	sign := ""
+	if strings.HasPrefix(s, "-") {
+		sign, s = "-", s[1:]
+	}
+	if len(s) <= 3 {
+		return sign + s
+	}
+	var b strings.Builder
+	b.Grow(len(sign) + len(s) + len(s)/3)
+	b.WriteString(sign)
+	first := len(s) % 3
+	if first > 0 {
+		b.WriteString(s[:first])
+	}
+	for i := first; i < len(s); i += 3 {
+		if b.Len() > len(sign) {
+			b.WriteByte(',')
+		}
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
+}
+
+// formatUSD4 formats a small per-model cost (e.g. 0.0132 USD) without
+// trailing zeros.
+func formatUSD4(v float64) string {
+	return strconv.FormatFloat(math.Round(v*10000)/10000, 'f', -1, 64) + " USD"
 }
 
 // fetchOllamaQuota is a separate tile with the account quota. GET /api/balance
@@ -339,6 +504,7 @@ func fetchOllamaQuota(client *http.Client, t TileConfig) ProviderResult {
 		r.Message = "The /api/balance endpoint responded but with no recognised quota data. Set " + t.EnvKey("URL") + " if you use a compatible proxy."
 		return r
 	}
+	appendOllamaRecentModels(client, &r, t)
 	r.Status = "ok"
 	r.Summary = "Ollama Cloud monthly limit"
 	return r

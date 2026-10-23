@@ -46,7 +46,7 @@ of every type.
 | `claude` | Pro/Max limits: 5 h / weekly and weekly per model, from the unofficial `api.anthropic.com/api/oauth/usage` (same as `/usage` in Claude Code). That endpoint is rate-limited per token: a successful result is reused for 5 minutes, and after HTTP 429 it is not called again until `Retry-After` or a backoff of 5 min doubling up to 1 h. | `AUTH_FILE` (Claude Code `.credentials.json`), `URL`?, `TOKEN_URL`?, `CACHE_SECONDS`? (default 300) |
 | `anthropic-api` | Anthropic API (pay-as-you-go) usage this month from the Usage & Cost Admin API: tokens from `GET /v1/organizations/usage_report/messages` (input, cache read, cache write, output) and cost from `GET /v1/organizations/cost_report`. **Not** the Pro/Max quota (that is `claude`). Needs an organization Admin API key (`sk-ant-admin...`). | `API_KEY`, `MONTHLY_LIMIT_USD`? (local budget bar), `USAGE_URL`?, `COST_URL`? |
 | `ollama-usage` | `GET https://ollama.com/api/usage`: `totals` (requests, USD, tokens) and `buckets`. The older `limits.session\|weekly\|monthly` format is still recognised. | `API_KEY`, `RANGE`? (`24h`\|`7d`\|`30d`), `MONTHLY_LIMIT_USD`?, `RESET_ANCHOR`? (older format only), `URL`? |
-| `ollama-balance` | `GET https://ollama.com/api/balance`: monthly allowance, remaining credits, purchased credits and the **reset date** (`period.until`). The bar shows `(allowance - balance)/allowance`. | `API_KEY`, `URL`? |
+| `ollama-balance` | `GET https://ollama.com/api/balance`: monthly allowance, remaining credits, purchased credits and the **reset date** (`period.until`). The bar shows `(allowance - balance)/allowance`. It also queries `GET /api/usage?group_by=model` (last 7 days by default) and lists the most frequently used models under the monthly limit, with requests and cost (or tokens when cost is unavailable). | `API_KEY`, `RANGE`? (`24h`\|`7d`\|`30d`), `URL`?, `USAGE_URL`? |
 | `opencode-go` | 5 h / weekly / monthly quota from `GET https://opencode.ai/zen/go/v1/usage`. | `API_KEY`, `URL`? |
 
 `?` = optional. `URL` / `TOKEN_URL` / `USAGE_URL` / `COST_URL` override the endpoints (for tests or a proxy).
@@ -150,12 +150,12 @@ Example shape (`id` is the tile id from `TILES`; metrics may have optional `rese
       "summary": "Ollama Cloud usage",
       "source": "Ollama Cloud API (/api/usage)",
       "metrics": [
-        {"label":"Requests (7 days)","value":"7035"},
+        {"label":"Requests (7 days)","value":"7,035"},
         {"label":"Cost (7 days)","value":"12.44 USD"},
-        {"label":"Tokens (7 days)","value":"4180000","rows":[
-          {"label":"Input","value":"3900000"},
-          {"label":"Cached","value":"1200000"},
-          {"label":"Output","value":"280000"}
+        {"label":"Tokens (7 days)","value":"4,180,000","rows":[
+          {"label":"Input","value":"3,900,000"},
+          {"label":"Cached","value":"1,200,000"},
+          {"label":"Output","value":"280,000"}
         ]}
       ]
     },
@@ -167,7 +167,12 @@ Example shape (`id` is the tile id from `TILES`; metrics may have optional `rese
       "summary": "Ollama Cloud monthly limit",
       "source": "Ollama Cloud API (/api/balance)",
       "metrics": [
-        {"label":"Monthly limit","value":"45.00 / 60.00 USD","percent":75,"resetAt":"2026-01-01T00:00:00Z"}
+        {"label":"Monthly limit","value":"45.00 / 60.00 USD","percent":75,"resetAt":"2026-01-01T00:00:00Z"},
+        {"label":"Top models (7 days)","value":"7,035","rows":[
+          {"label":"glm-5.3-flash","value":"5,120 req · 9.42 USD"},
+          {"label":"gpt-oss:120b","value":"1,215 req · 2.14 USD"},
+          {"label":"qwen3-coder:480b","value":"700 req · 0.88 USD"}
+        ]}
       ]
     }
   ]

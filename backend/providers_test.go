@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -58,7 +60,7 @@ func TestOllamaUsageShape(t *testing.T) {
 	if m := metricByLabel(r, "Cost (7 days)"); m == nil || m.Value != "0.02 USD" {
 		t.Fatalf("Cost (7 days) = %+v", m)
 	}
-	if m := metricByLabel(r, "Tokens (7 days)"); m == nil || m.Value != "119600" {
+	if m := metricByLabel(r, "Tokens (7 days)"); m == nil || m.Value != "119,600" {
 		t.Fatalf("Tokens (7 days) = %+v", m)
 	}
 	if m := metricByLabel(r, "Requests by day (7 days)"); m == nil || m.Value != "12" || len(m.Rows) != 2 {
@@ -128,7 +130,7 @@ func TestOllamaLegacyMonthly(t *testing.T) {
 	if m := metricByLabel(r, "Month"); m == nil || m.Value != "23.1% used" || m.ResetAt == "" {
 		t.Fatalf("Month = %+v", m)
 	}
-	if m := metricByLabel(r, "Requests by model (month)"); m == nil || m.Value != "1321" || len(m.Rows) != 2 {
+	if m := metricByLabel(r, "Requests by model (month)"); m == nil || m.Value != "1,321" || len(m.Rows) != 2 {
 		t.Fatalf("Requests by model = %+v", m)
 	}
 	if m := metricByLabel(r, "Cost (4 wk)"); m == nil || m.Value != "31.22 USD" {
@@ -159,6 +161,149 @@ func TestWithOllamaRange(t *testing.T) {
 		if got := withOllamaRange(c.in, c.rng); got != c.want {
 			t.Errorf("withOllamaRange(%q, %q) = %q, want %q", c.in, c.rng, got, c.want)
 		}
+	}
+}
+
+func TestWithOllamaGroupBy(t *testing.T) {
+	cases := []struct{ in, group, want string }{
+		{"https://ollama.com/api/usage", "", "https://ollama.com/api/usage"},
+		{"https://ollama.com/api/usage", "model", "https://ollama.com/api/usage?group_by=model"},
+		{"http://proxy.local/usage?range=7d", "model", "http://proxy.local/usage?range=7d&group_by=model"},
+		{"https://ollama.com/api/usage?group_by=model", "model", "https://ollama.com/api/usage?group_by=model"},
+	}
+	for _, c := range cases {
+		if got := withOllamaGroupBy(c.in, c.group); got != c.want {
+			t.Errorf("withOllamaGroupBy(%q, %q) = %q, want %q", c.in, c.group, got, c.want)
+		}
+	}
+}
+
+func TestFormatCountThousands(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want string
+	}{
+		{0, "0"},
+		{15, "15"},
+		{999, "999"},
+		{1000, "1,000"},
+		{12345, "12,345"},
+		{119600, "119,600"},
+		{4180000, "4,180,000"},
+		{-1234, "-1,234"},
+	}
+	for _, c := range cases {
+		if got := formatCount(c.in); got != c.want {
+			t.Errorf("formatCount(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// The model breakdown is ranked by requests (not by the API's cost order) and
+// shows requests plus cost, or tokens when cost is unavailable.
+func TestOllamaModelRows(t *testing.T) {
+	raw := mustRaw(t, `{
+	  "range": "7d",
+	  "totals": {
+	    "request_count": 20,
+	    "groups": [
+	      {"model":"gpt-oss:120b","request_count":2,"usage_usd":0.0036,"input_tokens":16000,"output_tokens":2000},
+	      {"model":"glm-5.3","request_count":2,"usage_usd":0.01,"input_tokens":4000,"output_tokens":1000},
+	      {"model":"glm-5.3-flash","request_count":12,"usage_usd":0.0132,"input_tokens":96000,"cached_input_tokens":60000,"output_tokens":12000}
+	    ]
+	  }
+	}`)
+
+	rows := ollamaModelRows(raw)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if rows[0].Label != "glm-5.3-flash" || rows[0].Value != "12 req · 0.0132 USD" {
+		t.Fatalf("rows[0] = %+v", rows[0])
+	}
+	if rows[1].Label != "glm-5.3" || rows[1].Value != "2 req · 0.01 USD" {
+		t.Fatalf("rows[1] = %+v", rows[1])
+	}
+	if rows[2].Label != "gpt-oss:120b" || rows[2].Value != "2 req · 0.0036 USD" {
+		t.Fatalf("rows[2] = %+v", rows[2])
+	}
+
+	legacy := mustRaw(t, `{"range":"7d","totals":{"groups":[
+	  {"model":"llama3.2","request_count":3,"input_tokens":100000,"output_tokens":19600},
+	  {"model":"qwen3","request_count":1}
+	]}}`)
+	rows = ollamaModelRows(legacy)
+	if len(rows) != 2 || rows[0].Value != "3 req · 119,600 tok" || rows[1].Value != "1 req" {
+		t.Fatalf("token/request fallback = %+v", rows)
+	}
+}
+
+// The balance tile fetches /api/balance and then the model breakdown, which is
+// inserted directly below the monthly limit.
+func TestOllamaBalanceWithTopModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/balance":
+			w.Write([]byte(`{"included":{"balance_usd":40,"allowance_usd":100,
+			  "period":{"until":"2026-11-01T00:00:00Z"}},"purchased":{"balance_usd":5}}`))
+		case "/usage":
+			if r.URL.Query().Get("group_by") != "model" || r.URL.Query().Get("range") != "7d" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Write([]byte(`{"range":"7d","totals":{"request_count":15,"groups":[
+			  {"model":"glm-5.3-flash","request_count":12,"usage_usd":0.0132},
+			  {"model":"gpt-oss:120b","request_count":3,"usage_usd":0.0036}
+			]}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("TILES", "ollama-limit")
+	t.Setenv("TILE_OLLAMA_LIMIT_TYPE", "ollama-balance")
+	t.Setenv("TILE_OLLAMA_LIMIT_API_KEY", "secret")
+	t.Setenv("TILE_OLLAMA_LIMIT_URL", srv.URL+"/balance")
+	t.Setenv("TILE_OLLAMA_LIMIT_USAGE_URL", srv.URL+"/usage")
+
+	r := fetchTile(srv.Client(), loadTiles()[0])
+	if r.Status != "ok" || len(r.Metrics) != 3 {
+		t.Fatalf("result: %+v", r)
+	}
+	if r.Metrics[0].Label != "Monthly limit" || r.Metrics[1].Label != "Top models (7 days)" || r.Metrics[2].Label != "Purchased credits" {
+		t.Fatalf("metric order: %+v", r.Metrics)
+	}
+	m := r.Metrics[1]
+	if m.Value != "15" || len(m.Rows) != 2 || m.Rows[0].Value != "12 req · 0.0132 USD" {
+		t.Fatalf("Top models = %+v", m)
+	}
+}
+
+// A failing usage call must not hide the monthly limit itself.
+func TestOllamaBalanceTopModelsFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/balance" {
+			w.Write([]byte(`{"included":{"balance_usd":40,"allowance_usd":100}}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	t.Setenv("TILES", "ollama-limit")
+	t.Setenv("TILE_OLLAMA_LIMIT_TYPE", "ollama-balance")
+	t.Setenv("TILE_OLLAMA_LIMIT_API_KEY", "secret")
+	t.Setenv("TILE_OLLAMA_LIMIT_URL", srv.URL+"/balance")
+	t.Setenv("TILE_OLLAMA_LIMIT_USAGE_URL", srv.URL+"/usage")
+
+	r := fetchTile(srv.Client(), loadTiles()[0])
+	if r.Status != "ok" || len(r.Metrics) != 1 || r.Metrics[0].Label != "Monthly limit" || !strings.Contains(r.Message, "Model breakdown unavailable") {
+		t.Fatalf("result: %+v", r)
 	}
 }
 
