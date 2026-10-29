@@ -38,6 +38,7 @@ type tileType struct {
 }
 
 var tileTypes = map[string]tileType{
+	"openrouter":     {"OpenRouter", fetchOpenRouter},
 	"openai-costs":   {"OpenAI", fetchOpenAI},
 	"chatgpt":        {"ChatGPT (subscription)", fetchChatGPT},
 	"claude":         {"Claude (subscription)", fetchAnthropic},

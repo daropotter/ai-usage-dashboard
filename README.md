@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/daropotter/ai-usage-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/daropotter/ai-usage-dashboard/actions/workflows/ci.yml)
 
-Read-only dashboard of usage and limits for **OpenAI**, **ChatGPT (subscription)**,
+Read-only dashboard of usage and limits for **OpenRouter**, **OpenAI**, **ChatGPT (subscription)**,
 **Claude / Anthropic** (Pro/Max subscription and API usage), **OpenCode Go** and
 **Ollama Cloud**.
 
@@ -41,6 +41,7 @@ of every type.
 
 | `TYPE` | Data source | Keys (`TILE_<ID>_…`) |
 | --- | --- | --- |
+| `openrouter` | OpenRouter billing metadata: `GET /api/v1/key` for this key's daily/weekly/monthly/all-time cost, optional budget and free-model daily request limits; `GET /api/v1/credits` for account credits remaining, purchased and spent. Account credits may require a management key; if unavailable, the tile still shows key usage. Key labels are never returned to the frontend. | `API_KEY`, `URL`?, `CREDITS_URL`? |
 | `openai-costs` | OpenAI Organization Costs API (`GET /v1/organization/costs`): organization cost this month. **Not** a ChatGPT subscription meter. Needs an organization admin key. | `API_KEY`, `MONTHLY_LIMIT_USD`? (local budget bar), `URL`? |
 | `chatgpt` | 5 h / weekly subscription limits from the unofficial ChatGPT backend (`chatgpt.com/backend-api/wham/usage`), the same one Codex CLI uses. | `AUTH_FILE` (Codex CLI `auth.json`), `URL`?, `TOKEN_URL`? |
 | `claude` | Pro/Max limits: 5 h / weekly and weekly per model, from the unofficial `api.anthropic.com/api/oauth/usage` (same as `/usage` in Claude Code). That endpoint is rate-limited per token: a successful result is reused for 5 minutes, and after HTTP 429 it is not called again until `Retry-After` or a backoff of 5 min doubling up to 1 h. | `AUTH_FILE` (Claude Code `.credentials.json`), `URL`?, `TOKEN_URL`?, `CACHE_SECONDS`? (default 300) |
@@ -49,7 +50,7 @@ of every type.
 | `ollama-balance` | `GET https://ollama.com/api/balance`: monthly allowance, remaining credits, purchased credits and the **reset date** (`period.until`). The bar shows `(allowance - balance)/allowance`. It also queries `GET /api/usage?group_by=model` (last 7 days by default) and lists the most frequently used models under the monthly limit, with requests and cost (or tokens when cost is unavailable). | `API_KEY`, `RANGE`? (`24h`\|`7d`\|`30d`), `URL`?, `USAGE_URL`? |
 | `opencode-go` | 5 h / weekly / monthly quota from `GET https://opencode.ai/zen/go/v1/usage`. | `API_KEY`, `URL`? |
 
-`?` = optional. `URL` / `TOKEN_URL` / `USAGE_URL` / `COST_URL` override the endpoints (for tests or a proxy).
+`?` = optional. `URL` / `TOKEN_URL` / `USAGE_URL` / `COST_URL` / `CREDITS_URL` override the endpoints (for tests or a proxy).
 
 **Unofficial endpoints:** the `chatgpt` and `claude` tiles use undocumented
 consumer endpoints. They may change without notice or rate-limit requests; the
@@ -131,6 +132,27 @@ Example shape (`id` is the tile id from `TILES`; metrics may have optional `rese
 ```json
 {
   "providers": [
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "status": "ok",
+      "configured": true,
+      "summary": "Account balance and API key usage",
+      "source": "OpenRouter billing API",
+      "metrics": [
+        {"label":"Credits remaining","value":"60.00 USD","rows":[
+          {"label":"Purchased (all time)","value":"100.00 USD"},
+          {"label":"Spent (all time)","value":"40.00 USD"}
+        ]},
+        {"label":"Cost this month (API key)","value":"12.00 USD","rows":[
+          {"label":"Today","value":"1.00 USD"},
+          {"label":"This week","value":"4.00 USD"},
+          {"label":"All time","value":"25.00 USD"}
+        ]},
+        {"label":"API key budget (monthly)","value":"12.00 / 20.00 USD used","percent":60},
+        {"label":"Free model requests today","value":"30 / 1,000","percent":3}
+      ]
+    },
     {
       "id": "opencode",
       "name": "OpenCode Go",
